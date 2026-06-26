@@ -14,6 +14,7 @@ from .models import (
     ServiceUser,
     Session,
     TravelEstimate,
+    TravelMode,
     Worker,
 )
 
@@ -35,6 +36,18 @@ def score_assign_action(
     action: AssignAction,
     travel_estimator: TravelEstimator,
 ) -> Recommendation:
+    guardrail_failures = _action_guardrail_failures(state, action)
+    if guardrail_failures:
+        return Recommendation(
+            action=action,
+            score=0.0,
+            hard_constraint_failures=guardrail_failures,
+            reasons=(),
+            warnings=(),
+            components={},
+            travel_estimate=None,
+        )
+
     worker = state.workers[action.worker_id]
     session = state.sessions[action.session_id]
     service_user = state.service_users[session.service_user_id]
@@ -180,6 +193,9 @@ def _hard_constraint_failures(
 ) -> tuple[str, ...]:
     failures: list[str] = []
 
+    if len(session.assigned) >= session.required_worker_count:
+        failures.append("session is already fully allocated")
+
     if any(allocation.worker_id == worker.id for allocation in session.assigned):
         failures.append("worker is already assigned to this session")
 
@@ -219,8 +235,15 @@ def _travel_failures(
 ) -> tuple[str, ...]:
     failures: list[str] = []
 
-    if (service_user.requires_driver or session.requires_driver) and not worker.has_car:
-        failures.append("session requires a driver/car")
+    if estimate.mode not in worker.travel_modes:
+        failures.append(f"travel estimate mode {estimate.mode.value} is not allowed for worker")
+
+    requires_driver = service_user.requires_driver or session.requires_driver
+    if requires_driver:
+        if not worker.has_car or TravelMode.DRIVE not in worker.travel_modes:
+            failures.append("session requires a driver/car")
+        if estimate.mode != TravelMode.DRIVE:
+            failures.append("session requires a drive-capable route")
 
     buffer_minutes = session.travel_buffer_before_minutes
     if buffer_minutes is None:
@@ -243,10 +266,24 @@ def _travel_failures(
             destination=next_session.location,
             departure_time=session.end,
         )
+        if next_estimate.mode not in worker.travel_modes:
+            failures.append(f"next travel estimate mode {next_estimate.mode.value} is not allowed for worker")
         earliest_arrival = session.end + timedelta(minutes=next_estimate.minutes + after_buffer_minutes)
         if earliest_arrival > next_session.start:
             failures.append("not enough time to travel to next allocated session")
 
+    return tuple(failures)
+
+
+def _action_guardrail_failures(state: PlanningState, action: AssignAction) -> tuple[str, ...]:
+    failures: list[str] = []
+    if action.worker_id not in state.workers:
+        failures.append("unknown worker id")
+    session = state.sessions.get(action.session_id)
+    if session is None:
+        failures.append("unknown session id")
+    elif session.service_user_id not in state.service_users:
+        failures.append("missing service user for session")
     return tuple(failures)
 
 
@@ -264,16 +301,14 @@ def _is_available(worker: Worker, session: Session) -> bool:
 def _has_schedule_conflict(state: PlanningState, worker: Worker, candidate_session: Session) -> bool:
     for session_id in worker.current_allocations:
         existing = state.sessions.get(session_id)
-        if existing and existing.id != candidate_session.id and _session_too_close(
-            existing, candidate_session, state.tenant_rules.min_travel_buffer_minutes
-        ):
+        if existing and existing.id != candidate_session.id and _sessions_overlap(existing, candidate_session):
             return True
     for existing in state.sessions.values():
         if existing.id == candidate_session.id:
             continue
         if not any(allocation.worker_id == worker.id for allocation in existing.assigned):
             continue
-        if _session_too_close(existing, candidate_session, state.tenant_rules.min_travel_buffer_minutes):
+        if _sessions_overlap(existing, candidate_session):
             return True
     return False
 
@@ -336,9 +371,8 @@ def _allocated_sessions_for_worker(state: PlanningState, worker: Worker) -> tupl
     return tuple(sessions)
 
 
-def _session_too_close(left: Session, right: Session, buffer_minutes: int) -> bool:
-    buffer = timedelta(minutes=buffer_minutes)
-    return left.start < right.end + buffer and right.start < left.end + buffer
+def _sessions_overlap(left: Session, right: Session) -> bool:
+    return left.start < right.end and right.start < left.end
 
 
 def _contains(window: AvailabilityWindow, start, end) -> bool:

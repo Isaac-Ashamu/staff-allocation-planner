@@ -16,12 +16,21 @@ from .models import Allocation, AssignAction, PlanningState, Session
 def apply_assign_action(state: PlanningState, action: AssignAction) -> PlanningState:
     """Return a new state after a human-approved assignment decision."""
 
-    session = state.sessions[action.session_id]
+    session = state.sessions.get(action.session_id)
+    worker = state.workers.get(action.worker_id)
+    if session is None or worker is None:
+        return state
+    if len(session.assigned) >= session.required_worker_count:
+        return state
+    if any(allocation.worker_id == action.worker_id for allocation in session.assigned):
+        return state
+    if session.service_user_id not in state.service_users:
+        return state
+
     updated_session = _assign_worker_to_session(session, action)
     updated_sessions = dict(state.sessions)
     updated_sessions[action.session_id] = updated_session
 
-    worker = state.workers[action.worker_id]
     updated_worker = replace(
         worker,
         current_allocations=worker.current_allocations + (action.session_id,),
@@ -57,25 +66,42 @@ def _apply_worker_unavailable(state: PlanningState, event: WorkerUnavailableEven
         return state
 
     worker = state.workers[event.worker_id]
-    updated_worker = replace(worker, unavailability=worker.unavailability + (event.unavailable_window,))
-    updated_workers = dict(state.workers)
-    updated_workers[event.worker_id] = updated_worker
-
     updated_sessions = {}
     affected_session_ids = set()
+    removed_hours = 0.0
     for session_id, session in state.sessions.items():
         if any(allocation.worker_id == event.worker_id for allocation in session.assigned):
             if _window_overlaps_session(event.unavailable_window, session):
+                removed_count = sum(
+                    1 for allocation in session.assigned if allocation.worker_id == event.worker_id
+                )
                 remaining = tuple(
                     allocation
                     for allocation in session.assigned
                     if allocation.worker_id != event.worker_id
                 )
                 affected_session_ids.add(session_id)
+                removed_hours += removed_count * (
+                    (session.end - session.start).total_seconds() / 3600.0
+                )
                 status = "unallocated" if not remaining else "partially_allocated"
                 updated_sessions[session_id] = replace(session, assigned=remaining, status=status)
                 continue
         updated_sessions[session_id] = session
+
+    repaired_allocations = tuple(
+        session_id
+        for session_id in worker.current_allocations
+        if session_id not in affected_session_ids
+    )
+    updated_worker = replace(
+        worker,
+        unavailability=worker.unavailability + (event.unavailable_window,),
+        current_allocations=repaired_allocations,
+        current_hours=max(0.0, worker.current_hours - removed_hours),
+    )
+    updated_workers = dict(state.workers)
+    updated_workers[event.worker_id] = updated_worker
 
     warnings = state.data_quality_warnings
     if affected_session_ids:
@@ -123,4 +149,3 @@ def _apply_profile_stale(
 
 def _window_overlaps_session(window, session: Session) -> bool:
     return session.start < window.end and window.start < session.end
-
