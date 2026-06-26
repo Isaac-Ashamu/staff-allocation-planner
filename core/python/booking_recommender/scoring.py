@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Protocol
 
 from .models import (
     AssignAction,
     AvailabilityWindow,
+    Location,
     PlanningState,
     Recommendation,
     ServiceUser,
@@ -14,7 +16,18 @@ from .models import (
     TravelEstimate,
     Worker,
 )
-from .travel import TravelEstimator
+
+
+class TravelEstimator(Protocol):
+    def estimate(
+        self,
+        *,
+        worker: Worker,
+        origin: Location,
+        destination: Location,
+        departure_time,
+    ) -> TravelEstimate:
+        ...
 
 
 def score_assign_action(

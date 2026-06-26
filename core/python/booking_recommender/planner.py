@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from .models import AssignAction, PlanningState, Recommendation
-from .scoring import score_assign_action
-from .travel import TravelEstimator
+from .scoring import TravelEstimator, score_assign_action
 
 
 def rank_session_candidates(
@@ -28,4 +27,3 @@ def rank_session_candidates(
 
     recommendations.sort(key=lambda item: item.score, reverse=True)
     return recommendations[:top_n]
-

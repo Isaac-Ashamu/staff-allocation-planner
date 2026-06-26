@@ -1,14 +1,13 @@
 # Upgrade Roadmap
 
-This roadmap moves the project from a local spreadsheet prototype to a
-deployable, tenant-agnostic SaaS recommender.
+This roadmap moves the project from the rebuild foundation to a deployable,
+tenant-agnostic SaaS recommender.
 
 ## Phase 0: Protect Source Data
 
 Status: implemented as project rule.
 
-- Treat shared drives, booking exports, profile folders, and HR files as read-only
-  source systems.
+- Treat tenant source files and operational systems as read-only source systems.
 - Write all derived outputs into the application workspace or cloud database.
 - Keep every import run auditable: source path, timestamp, row count, warnings,
   and generated state snapshot ID.
@@ -17,7 +16,8 @@ Status: implemented as project rule.
 
 Status: implemented in `core/python/booking_recommender`.
 
-Goal: define the normalized planning language independent of provider spreadsheets.
+Goal: define the normalized planning language independent of tenant-specific
+source files.
 
 Implemented objects:
 
@@ -35,27 +35,26 @@ Implemented objects:
 - `AssignAction`
 - `Recommendation`
 
-Implemented services:
+Implemented or retained core services:
 
-- Travel estimation interface.
-- Heuristic travel estimator by mode.
 - Hard-constraint checker.
 - Explainable action scorer.
 - Single-session ranking planner.
 
 ## Phase 2: Import Adapters
 
-Status: initial provider workbook adapters implemented.
+Status: deferred during rebuild.
 
-Build adapters that map company-specific files into the shared domain model.
+Build adapters that map company-specific files into the standardized import
+contract. Raw adapters should not bypass the standardized contract.
 
 Adapters:
 
 - Monthly booking workbook adapter.
 - Staff and service-user postcode workbook adapter.
 - Ad hoc/date request workbook adapter.
-- Email `.msg` date request adapter. Pending.
-- Availability PDF adapter. Implemented for current report layout.
+- Email/date request adapter.
+- Availability report adapter.
 - Calendar adapter. Pending.
 - Feedback/incidents adapter.
 - Profile JSON adapter.
@@ -69,11 +68,10 @@ Outputs:
 
 ## Phase 3: Travel-Time Service
 
-Status: prototype provider implemented.
+Status: deferred during rebuild.
 
-The current core has a deterministic heuristic estimator and an OSRM/Postcodes.io
-prototype estimator. SaaS deployment still needs provider-backed estimates with
-quotas, monitoring, caching, attribution, and tenant configuration.
+Travel should come back after the standardized importer and allocation planner
+are stable.
 
 Provider options:
 

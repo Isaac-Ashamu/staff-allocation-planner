@@ -6,8 +6,8 @@ from dataclasses import dataclass
 
 from .models import AssignAction, PlanningState, Recommendation
 from .planner import rank_session_candidates
+from .scoring import TravelEstimator
 from .transitions import apply_assign_action
-from .travel import TravelEstimator
 
 
 @dataclass(frozen=True)

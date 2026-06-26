@@ -80,23 +80,6 @@ before scoring. This keeps the recommender company-agnostic.
 - `notes`
 - `source_ref`
 
-## provider Source Mapping
-
-The current local data maps approximately as follows.
-
-- `Import sheet for kids <month>.xlsx/Bookings` -> `Sessions`
-- `Import sheet for kids <month>.xlsx/Matching` -> `Compatibility`
-- `Staff and SU names and postcode.xlsx/STAFF` -> `Workers`
-- `Staff and SU names and postcode.xlsx/SU` -> `Service Users`
-- `July 2026 Ad hocs.xlsx` -> `Family Requests`
-- Date request `.msg` files -> `Family Requests`
-- `data\availability report\*.pdf` -> `Worker.availability` and
-  `Worker.unavailability`
-- Feedback CSV -> `Pair History`, interests, profile-staleness warnings
-- Incident CSV -> `Pair History`, risk warnings
-- Profile JSON -> `Service Users`
-- Illness/cover workbook -> reliability and exogenous event history
-
 ## Data Quality Flags
 
 Import adapters must emit warnings for:

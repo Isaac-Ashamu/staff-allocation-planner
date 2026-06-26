@@ -25,15 +25,8 @@ from .events import (
 )
 from .planner import rank_session_candidates
 from .batch import GreedyPlan, PlannedAssignment, greedy_allocate_open_sessions
-from .scoring import score_assign_action
+from .scoring import TravelEstimator, score_assign_action
 from .transitions import apply_assign_action, apply_exogenous_event
-from .travel import (
-    CachedGeocoder,
-    GeocodedHeuristicTravelEstimator,
-    HeuristicTravelEstimator,
-    OSRMTravelEstimator,
-    PostcodesIoGeocoder,
-)
 
 __all__ = [
     "Allocation",
@@ -44,21 +37,17 @@ __all__ = [
     "FamilyRequest",
     "FamilyRequestArrivedEvent",
     "GreedyPlan",
-    "CachedGeocoder",
-    "GeocodedHeuristicTravelEstimator",
-    "HeuristicTravelEstimator",
     "Location",
-    "OSRMTravelEstimator",
     "PairHistory",
     "PlannedAssignment",
     "PlanningState",
-    "PostcodesIoGeocoder",
     "Recommendation",
     "ServiceUser",
     "ServiceUserProfileStaleEvent",
     "Session",
     "TenantRules",
     "TravelEstimate",
+    "TravelEstimator",
     "TravelMode",
     "Worker",
     "WorkerUnavailableEvent",
