@@ -15,6 +15,7 @@ class PlannedAssignment:
     recommendation: Recommendation
     accepted: bool
     reason: str
+    candidates: tuple[Recommendation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ def greedy_allocate_open_sessions(
     state: PlanningState,
     travel_estimator: TravelEstimator,
     top_n: int = 10,
+    include_infeasible: bool = False,
 ) -> GreedyPlan:
     """Build a simple sequential allocation plan.
 
@@ -39,6 +41,8 @@ def greedy_allocate_open_sessions(
     assignments: list[PlannedAssignment] = []
 
     for session in sorted(current_state.sessions.values(), key=lambda item: (item.start, item.id)):
+        if session.status in {"cancelled", "rejected", "confirmed"}:
+            continue
         while True:
             current_session = current_state.sessions[session.id]
             if len(current_session.assigned) >= current_session.required_worker_count:
@@ -50,8 +54,14 @@ def greedy_allocate_open_sessions(
                 role=role,
                 travel_estimator=travel_estimator,
                 top_n=top_n,
+                include_infeasible=include_infeasible,
             )
-            if not recommendations:
+            feasible_recommendations = tuple(
+                recommendation
+                for recommendation in recommendations
+                if not recommendation.hard_constraint_failures
+            )
+            if not feasible_recommendations:
                 assignments.append(
                     PlannedAssignment(
                         recommendation=Recommendation(
@@ -64,16 +74,18 @@ def greedy_allocate_open_sessions(
                         ),
                         accepted=False,
                         reason="no feasible candidates",
+                        candidates=tuple(recommendations),
                     )
                 )
                 break
-            selected = recommendations[0]
+            selected = feasible_recommendations[0]
             current_state = apply_assign_action(current_state, selected.action)
             assignments.append(
                 PlannedAssignment(
                     recommendation=selected,
                     accepted=True,
                     reason="selected top feasible candidate",
+                    candidates=tuple(recommendations),
                 )
             )
 

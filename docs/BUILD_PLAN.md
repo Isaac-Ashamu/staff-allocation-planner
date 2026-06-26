@@ -236,6 +236,9 @@ Implemented:
   summary CLI.
 - Adds unit tests for valid fixture loading, invalid references/time windows,
   invalid assignments/compatibility, and CLI output.
+- First end-to-end allocation CLI exists for standardized CSV imports, proposed
+  greedy plans, readable reports, recommendation details, debug candidates, and
+  derived output artifacts.
 
 Tasks:
 
@@ -261,9 +264,26 @@ Acceptance criteria:
 
 ## Phase 5: Build The First End-To-End Allocation CLI
 
-Status: Pending.
+Status: Done.
 
 Goal: prove the full allocation workflow before building a UI.
+
+Implemented:
+
+- Added `allocate-sessions` / `python -m booking_recommender.allocation_cli`.
+- Loads a standardized CSV v1 folder without mutating source files.
+- Generates a greedy proposed allocation plan for open sessions.
+- Prints a staff-readable report with allocated sessions, unfilled sessions,
+  blocked candidates, scores, reasons, warnings, and import warnings.
+- Preserves per-decision candidate recommendations from the full-plan planner.
+- Supports `--include-infeasible` for hard-failure debugging.
+- Supports `--compare-single-session` for comparing one-session ranking with the
+  full greedy plan.
+- Saves derived `allocation_report.json`, `planning_snapshot.json`,
+  `proposed_plan.json`, `recommendation_details.json`, and
+  `allocation_report.txt` artifacts to an output folder.
+- Added tests for fixture allocation behavior, readable CLI output, derived
+  artifact creation, debug candidates, and source-file immutability.
 
 Tasks:
 
