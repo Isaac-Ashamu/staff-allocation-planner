@@ -1,0 +1,3 @@
+session_id,service_user_id,start,end,location_label,location_postcode,location_latitude,location_longitude,location_area,required_worker_count,assigned_worker_ids,assigned_roles,requires_driver,priority,status,travel_buffer_before_minutes,travel_buffer_after_minutes,source_ref
+session-100,su-orchard,2026-07-10T14:00:00+01:00,2026-07-10T17:00:00+01:00,Synthetic activity room,,,,NX1,1,,,false,1.0,unallocated,15,15,synthetic-sessions-row-2
+session-200,su-river,2026-07-11T10:00:00+01:00,2026-07-11T12:00:00+01:00,Synthetic park meeting point,,,,EX1,2,worker-bravo,lead,true,1.5,partially_allocated,20,20,synthetic-sessions-row-3

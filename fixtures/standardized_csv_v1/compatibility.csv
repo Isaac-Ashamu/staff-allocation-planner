@@ -1,0 +1,3 @@
+worker_id,service_user_id,status,reason,source_ref
+worker-alpha,su-orchard,appropriate,synthetic compatibility,synthetic-compatibility-row-2
+worker-bravo,su-river,unknown,not yet assessed,synthetic-compatibility-row-3

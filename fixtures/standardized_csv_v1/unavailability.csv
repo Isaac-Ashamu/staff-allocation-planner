@@ -1,0 +1,2 @@
+unavailability_id,worker_id,start,end,reason,source_ref
+unavailability-alpha-1,worker-alpha,2026-07-12T09:00:00+01:00,2026-07-12T12:00:00+01:00,training,synthetic-unavailability-row-2

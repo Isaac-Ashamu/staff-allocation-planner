@@ -1,0 +1,3 @@
+availability_id,worker_id,start,end,source_ref
+availability-alpha-1,worker-alpha,2026-07-10T13:00:00+01:00,2026-07-10T18:00:00+01:00,synthetic-availability-row-2
+availability-bravo-1,worker-bravo,2026-07-11T09:00:00+01:00,2026-07-11T13:00:00+01:00,synthetic-availability-row-3

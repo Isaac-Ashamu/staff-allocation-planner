@@ -1,0 +1,16 @@
+{
+  "import_run_id": "import-synthetic-2026-07-01",
+  "imported_at": "2026-07-01T09:00:00+01:00",
+  "source_system": "standardized-csv",
+  "source_refs": [
+    "fixtures/standardized_csv_v1/workers.csv",
+    "fixtures/standardized_csv_v1/service_users.csv",
+    "fixtures/standardized_csv_v1/sessions.csv",
+    "fixtures/standardized_csv_v1/availability.csv",
+    "fixtures/standardized_csv_v1/unavailability.csv",
+    "fixtures/standardized_csv_v1/compatibility.csv",
+    "fixtures/standardized_csv_v1/family_requests.csv",
+    "fixtures/standardized_csv_v1/pair_history.csv"
+  ],
+  "notes": "Synthetic v1 contract fixture for importer development."
+}

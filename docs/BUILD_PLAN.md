@@ -20,6 +20,9 @@ Done:
   allocation, and exogenous repair.
 - Sequential decision model is documented.
 - Normalized data contract is documented.
+- Executable standardized CSV v1 import contract is documented with synthetic
+  fixtures.
+- Standardized CSV v1 importer loads validated fixtures into `PlanningState`.
 - Upgrade roadmap is documented.
 
 Partly done:
@@ -34,7 +37,6 @@ Partly done:
 
 Not done:
 
-- Standardized CSV/JSON importer.
 - Data-quality validation report.
 - Tenant-specific workbook/email adapters.
 - Persistent database.
@@ -169,10 +171,22 @@ Acceptance criteria:
 
 ## Phase 3: Define The Executable Import Contract
 
-Status: Next.
+Status: Done.
 
 Goal: turn the normalized data contract into concrete files the importer can
 validate and load.
+
+Implemented:
+
+- Expanded `docs/NORMALIZED_DATA_CONTRACT.md` with exact standardized CSV v1
+  files, column names, field ownership, types, allowed values, list formats,
+  date/time rules, ID rules, validation severities, optional-field behavior, and
+  unknown compatibility semantics.
+- Added a complete synthetic fixture folder under
+  `fixtures/standardized_csv_v1/`.
+- Added contract fixture tests that verify required files, headers, enum values,
+  offset-aware date-times, and cross-table references before importer work
+  starts.
 
 Recommended v1 tables:
 
@@ -205,9 +219,23 @@ Acceptance criteria:
 
 ## Phase 4: Build The Standard Importer
 
-Status: Pending.
+Status: Done.
 
 Goal: load the standardized contract into a validated `PlanningState`.
+
+Implemented:
+
+- Added `booking_recommender.importer` for standardized CSV v1 loading.
+- Parses normalized workers, service users, sessions, availability,
+  unavailability, compatibility, family requests, pair history, manifest audit,
+  and source references into domain objects.
+- Emits a structured `ImportReport` with deterministic row counts, warnings,
+  errors, table names, row numbers, fields, and source refs.
+- Rejects invalid imports with `StandardizedImportError`.
+- Adds `import-standardized-csv` / `python -m booking_recommender.import_cli`
+  summary CLI.
+- Adds unit tests for valid fixture loading, invalid references/time windows,
+  invalid assignments/compatibility, and CLI output.
 
 Tasks:
 

@@ -1,6 +1,6 @@
 # Upgrade Roadmap
 
-This roadmap moves the project from the rebuild foundation to a deployable,
+This roadmap moves the project from the current foundation to a deployable,
 tenant-agnostic SaaS recommender.
 
 ## Phase 0: Protect Source Data
@@ -40,10 +40,11 @@ Implemented or retained core services:
 - Hard-constraint checker.
 - Explainable action scorer.
 - Single-session ranking planner.
+- Greedy full-plan allocation baseline.
 
 ## Phase 2: Import Adapters
 
-Status: deferred during rebuild.
+Status: deferred until the core foundation is stable.
 
 Build adapters that map company-specific files into the standardized import
 contract. Raw adapters should not bypass the standardized contract.
@@ -68,7 +69,7 @@ Outputs:
 
 ## Phase 3: Travel-Time Service
 
-Status: deferred during rebuild.
+Status: deferred until the core foundation is stable.
 
 Travel should come back after the standardized importer and allocation planner
 are stable.
@@ -91,12 +92,16 @@ Required behavior:
 
 ## Phase 4: Sequential Planner
 
-Status: single-session ranking implemented, full sequential planning pending.
+Status: single-session ranking and greedy full-plan baseline implemented; stronger
+sequential planning pending.
 
-Upgrade from candidate ranking to plan optimization:
+Upgrade from candidate ranking and greedy full-plan generation to stronger plan
+optimization:
 
 - Rank actions for one unfilled role.
 - Allocate all roles for one session.
+- Generate a proposed allocation plan for all open sessions in the planning
+  period.
 - Allocate one day with worker route constraints.
 - Repair plans after exogenous events such as illness or family changes.
 - Simulate likely disruptions and preserve reserve capacity.
@@ -125,6 +130,9 @@ Core API endpoints:
 
 - `POST /imports`
 - `GET /planning-states/{id}`
+- `POST /plans`
+- `GET /plans/{plan_id}`
+- `POST /plans/{plan_id}/approve`
 - `POST /recommendations/session/{session_id}`
 - `POST /recommendations/day`
 - `POST /decisions/{recommendation_id}/accept`
@@ -139,6 +147,7 @@ The UI should support bookings staff, not hide complexity.
 
 Views:
 
+- Proposed allocation plan.
 - Unallocated sessions queue.
 - Session detail with family request, risks, and profile summary.
 - Ranked worker candidates with reasons and warnings.

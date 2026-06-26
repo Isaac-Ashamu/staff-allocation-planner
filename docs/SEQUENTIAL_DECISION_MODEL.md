@@ -191,7 +191,9 @@ Examples:
 
 Hard constraints:
 
-- Worker must be available for the full session plus travel buffers.
+- Worker must be available for the full session time.
+- Worker must have feasible travel before and after the session, including route
+  buffers where configured.
 - Worker must be able to reach the session after previous commitments.
 - Worker must satisfy driver/car requirement where required.
 - Worker must not be explicitly inappropriate for the service user.

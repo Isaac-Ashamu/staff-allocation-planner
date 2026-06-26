@@ -12,3 +12,6 @@ readme = "README.md"
 [tool.setuptools.packages.find]
 where = ["core/python"]
 include = ["booking_recommender*"]
+
+[project.scripts]
+import-standardized-csv = "booking_recommender.import_cli:main"

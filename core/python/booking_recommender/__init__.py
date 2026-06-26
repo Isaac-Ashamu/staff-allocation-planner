@@ -29,6 +29,13 @@ from .planner import rank_session_candidates
 from .batch import GreedyPlan, PlannedAssignment, greedy_allocate_open_sessions
 from .scoring import TravelEstimator, score_assign_action
 from .transitions import apply_assign_action, apply_exogenous_event
+from .importer import (
+    ImportIssue,
+    ImportReport,
+    StandardizedImportError,
+    StandardizedImportResult,
+    load_standardized_csv,
+)
 
 __all__ = [
     "Allocation",
@@ -40,6 +47,8 @@ __all__ = [
     "FamilyRequestArrivedEvent",
     "GreedyPlan",
     "ImportAuditMetadata",
+    "ImportIssue",
+    "ImportReport",
     "Location",
     "PairHistory",
     "PlannedAssignment",
@@ -49,6 +58,8 @@ __all__ = [
     "ServiceUserProfileStaleEvent",
     "Session",
     "SourceReference",
+    "StandardizedImportError",
+    "StandardizedImportResult",
     "TenantRules",
     "TravelEstimate",
     "TravelEstimator",
@@ -58,6 +69,7 @@ __all__ = [
     "apply_assign_action",
     "apply_exogenous_event",
     "greedy_allocate_open_sessions",
+    "load_standardized_csv",
     "rank_session_candidates",
     "score_assign_action",
 ]

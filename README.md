@@ -3,8 +3,9 @@
 Rebuild foundation for a tenant-agnostic support-worker allocation planner.
 
 The recommender should be rules-first, optimization-aware, and explainable. It
-should help bookings staff see good candidates and the reason for each
-suggestion, not make final allocation decisions without review.
+should generate a complete proposed allocation plan for the planning period,
+show the reasons and warnings behind each allocation, and let bookings staff
+review, approve, adjust, or override the plan before it becomes final.
 
 ## Rebuild Scope
 
@@ -34,6 +35,7 @@ shared planning model.
 
 Implementation map:
 
+- [Build Plan](./docs/BUILD_PLAN.md)
 - [Upgrade Roadmap](./docs/UPGRADE_ROADMAP.md)
 - [Sequential Decision Model](./docs/SEQUENTIAL_DECISION_MODEL.md)
 - [Normalized Data Contract](./docs/NORMALIZED_DATA_CONTRACT.md)
@@ -46,11 +48,12 @@ Core deployable components:
   and HR/staff records.
 - Normalized operational database for workers, service users, sessions,
   availability, constraints, skills, geography, and audit logs.
-- Recommendation service that scores candidate actions and can run batch
-  allocation simulations.
+- Allocation service that scores candidate actions, generates full proposed
+  plans, and reports unfilled or high-risk sessions.
 - Travel-time service using postcode/geocode data, driving/public transport
   modes, and time-of-day estimates.
-- Human review workflow with reasons, warnings, overrides, and decision audit.
+- Human review workflow for proposed plans, exceptions, warnings, overrides, and
+  decision audit.
 - Feedback loop from completed sessions, cancellations, incidents, and family
   comments.
 
@@ -139,5 +142,6 @@ python -m unittest discover .\RecommenderSystem\core\python\tests
 - Normalize staff and service-user names/postcodes into stable IDs.
 - Add worker identity sync for ID/name/alias cases.
 - Add focused tests using small fixture CSVs.
-- Add a review UI that shows ranked candidates, conflicts, reasons, and an audit
-  trail for human decisions.
+- Add a review UI that shows the proposed allocation plan, unfilled sessions,
+  ranked alternatives, conflicts, reasons, warnings, and an audit trail for
+  human decisions.
