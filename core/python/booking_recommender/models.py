@@ -63,6 +63,25 @@ class AvailabilityWindow:
 
 
 @dataclass(frozen=True)
+class SourceReference:
+    import_run_id: str
+    table: str
+    source_ref: str
+    row_number: int | None = None
+
+
+@dataclass(frozen=True)
+class ImportAuditMetadata:
+    import_run_id: str
+    imported_at: datetime
+    source_system: str
+    source_refs: tuple[str, ...] = ()
+    row_counts: Mapping[str, int] = field(default_factory=dict)
+    validation_warnings: tuple[str, ...] = ()
+    generated_state_snapshot_id: str | None = None
+
+
+@dataclass(frozen=True)
 class Worker:
     id: str
     name: str
@@ -79,6 +98,7 @@ class Worker:
     max_hours: float | None = None
     preference_tags: frozenset[str] = frozenset()
     reliability_score: float | None = None
+    source_reference: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +116,7 @@ class ServiceUser:
     preferred_worker_ids: frozenset[str] = frozenset()
     avoided_worker_ids: frozenset[str] = frozenset()
     profile_is_stale: bool = False
+    source_reference: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +139,7 @@ class Session:
     status: str = "unallocated"
     travel_buffer_before_minutes: int | None = None
     travel_buffer_after_minutes: int | None = None
+    source_reference: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -126,6 +148,7 @@ class Compatibility:
     service_user_id: str
     status: str
     reason: str | None = None
+    source_reference: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +160,7 @@ class PairHistory:
     incident_count: int = 0
     cancellation_count: int = 0
     last_session_at: datetime | None = None
+    source_reference: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -150,6 +174,7 @@ class FamilyRequest:
     unavailable_windows: tuple[AvailabilityWindow, ...] = ()
     notes: str = ""
     source_ref: str | None = None
+    source_reference: SourceReference | None = None
 
 
 @dataclass(frozen=True)
@@ -192,3 +217,4 @@ class PlanningState:
     pair_history: Mapping[tuple[str, str], PairHistory] = field(default_factory=dict)
     family_requests: Sequence[FamilyRequest] = ()
     data_quality_warnings: tuple[str, ...] = ()
+    import_audit: ImportAuditMetadata | None = None

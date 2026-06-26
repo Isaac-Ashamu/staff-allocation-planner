@@ -1,0 +1,21 @@
+{
+  "service_user_aliases": {
+    "Synthetic Service User One": [
+      "Synthetic SU One",
+      "Test Service User"
+    ],
+    "Synthetic Service User Two": [
+      "Synthetic SU Two"
+    ]
+  },
+  "worker_aliases": {
+    "Synthetic Worker One": [
+      "Test Worker One",
+      "Worker A"
+    ],
+    "Synthetic Worker Two": [
+      "Test Worker Two",
+      "Worker B"
+    ]
+  }
+}

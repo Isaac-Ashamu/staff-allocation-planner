@@ -133,9 +133,20 @@ Acceptance criteria:
 
 ## Phase 2: Protect Local And Tenant Data
 
-Status: Next.
+Status: Done.
 
 Goal: prevent sensitive operational files from being committed or mutated.
+
+Implemented:
+
+- Added `RecommenderSystem/local-data/` to `.gitignore`.
+- Decided that real aliases are tenant/local configuration, not sample data.
+- Removed real aliases from the active committed path and added a synthetic
+  sample alias fixture under `RecommenderSystem/fixtures/`.
+- Created a `fixtures/` area for tiny synthetic test data.
+- Documented that raw tenant files are read-only source records.
+- Added import audit metadata and row source-reference fields to the domain
+  model before adapter work begins.
 
 Tasks:
 

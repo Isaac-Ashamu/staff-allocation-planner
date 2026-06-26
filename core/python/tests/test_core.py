@@ -15,11 +15,13 @@ from booking_recommender import (
     Compatibility,
     FamilyRequest,
     FamilyRequestArrivedEvent,
+    ImportAuditMetadata,
     Location,
     PairHistory,
     PlanningState,
     ServiceUser,
     Session,
+    SourceReference,
     TenantRules,
     TravelEstimate,
     TravelMode,
@@ -277,6 +279,33 @@ class BookingRecommenderCoreTests(unittest.TestCase):
             "worker is not available for the full session",
             debug_results[0].hard_constraint_failures,
         )
+
+    def test_import_audit_metadata_preserves_source_traceability(self):
+        source_reference = SourceReference(
+            import_run_id="import-run-1",
+            table="workers",
+            source_ref="synthetic/workers.csv",
+            row_number=2,
+        )
+        audit = ImportAuditMetadata(
+            import_run_id="import-run-1",
+            imported_at=self.start - timedelta(days=2),
+            source_system="standardized-csv",
+            source_refs=("synthetic/workers.csv", "synthetic/sessions.csv"),
+            row_counts={"workers": 2, "sessions": 1},
+            validation_warnings=("synthetic warning for test coverage",),
+            generated_state_snapshot_id="snapshot-1",
+        )
+        traced_worker = replace(self.worker, source_reference=source_reference)
+        traced_state = replace(
+            self.state,
+            workers={traced_worker.id: traced_worker},
+            import_audit=audit,
+        )
+
+        self.assertEqual(audit, traced_state.import_audit)
+        self.assertEqual(source_reference, traced_state.workers["worker-1"].source_reference)
+        self.assertEqual("synthetic/workers.csv", traced_state.import_audit.source_refs[0])
 
 
 if __name__ == "__main__":
