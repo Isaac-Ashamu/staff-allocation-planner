@@ -132,6 +132,142 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertIn("ambiguous_name", {issue.code for issue in report.warnings})
             self.assertEqual(0, len(result.state.sessions["booking-200"].assigned))
 
+    def test_adapter_understands_july_import_booking_columns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "sessions.csv").write_text(
+                "\n".join(
+                    [
+                        "booking_id,child_id,booking_date,booking_start_time,booking_finish_time,lead_sw_id,2nd_sw_id,2to1_required,car,recurring",
+                        "booking-july,su-brook,2026-07-10,14:00,16:00,worker-lane,worker-moss,true,true,false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-july")
+            result = load_standardized_csv(output_dir)
+
+            session = result.state.sessions["booking-july"]
+            self.assertEqual("su-brook", session.service_user_id)
+            self.assertEqual("2026-07-10T14:00:00+01:00", session.start.isoformat())
+            self.assertEqual("2026-07-10T16:00:00+01:00", session.end.isoformat())
+            self.assertEqual(2, session.required_worker_count)
+            self.assertEqual(("worker-lane", "worker-moss"), tuple(item.worker_id for item in session.assigned))
+            self.assertTrue(session.requires_driver)
+            self.assertEqual("allocated", session.status)
+
+    def test_import_sheet_bookings_default_to_weekly_recurrence_within_month(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "sessions.csv").write_text(
+                "\n".join(
+                    [
+                        "booking_id,child_id,booking_date,booking_start_time,booking_finish_time,lead_sw_id,2nd_sw_id,2to1_required,car,recurring",
+                        "booking-weekly,su-brook,10/07/2026,14:00,16:00,worker-lane,,false,false,",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-weekly")
+            result = load_standardized_csv(output_dir)
+
+            weekly_sessions = [
+                session
+                for session in sorted(result.state.sessions.values(), key=lambda item: item.start)
+                if session.id.startswith("booking-weekly")
+            ]
+            self.assertEqual(4, len(weekly_sessions))
+            self.assertEqual(
+                [
+                    "2026-07-10T14:00:00+01:00",
+                    "2026-07-17T14:00:00+01:00",
+                    "2026-07-24T14:00:00+01:00",
+                    "2026-07-31T14:00:00+01:00",
+                ],
+                [session.start.isoformat() for session in weekly_sessions],
+            )
+
+    def test_ad_hoc_recurrence_expands_only_when_explicit(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "date_requests.csv").unlink()
+            (source_dir / "ad_hocs.csv").write_text(
+                "\n".join(
+                    [
+                        "request_id,child_id,requested_staff,date,start_time,end_time,recurrence,until,notes",
+                        "adhoc-fortnight,su-brook,worker-lane,10/07/2026,14:00,16:00,fortnightly,31/07/2026,synthetic fortnightly ad hoc",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-adhoc-recurring")
+            result = load_standardized_csv(output_dir)
+
+            requests = [
+                request
+                for request in result.state.family_requests
+                if request.id == "adhoc-fortnight"
+            ]
+            self.assertEqual(1, len(requests))
+            self.assertEqual(
+                [
+                    "2026-07-10T14:00:00+01:00",
+                    "2026-07-24T14:00:00+01:00",
+                ],
+                [window.start.isoformat() for window in requests[0].preferred_time_ranges],
+            )
+            self.assertEqual(frozenset({4}), requests[0].preferred_days)
+
+    def test_adapter_reads_eml_date_requests_and_flags_msg_for_review(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "date_requests.csv").unlink()
+            (source_dir / "ad_hocs.csv").unlink()
+            request_dir = source_dir / "Date requests"
+            request_dir.mkdir()
+            (request_dir / "Cedar Child date request.eml").write_text(
+                "\n".join(
+                    [
+                        "Subject: Date request for Cedar Child",
+                        "Content-Type: text/plain; charset=utf-8",
+                        "",
+                        "Child: Cedar Child",
+                        "Requested staff: Lane Worker",
+                        "Preferred days: Friday",
+                        "Window: 2026-07-10T10:00:00+01:00/2026-07-10T12:00:00+01:00",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (request_dir / "Brook Child dates.msg").write_bytes(b"synthetic msg placeholder")
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-requests")
+            result = load_standardized_csv(output_dir)
+
+            self.assertIn("manual_request_file_review", {issue.code for issue in report.warnings})
+            cedar_requests = [
+                request
+                for request in result.state.family_requests
+                if request.service_user_id == "su-cedar" and "worker-lane" in request.requested_worker_ids
+            ]
+            self.assertEqual(1, len(cedar_requests))
+            self.assertEqual(frozenset({4}), cedar_requests[0].preferred_days)
+
 
 def _file_hashes(folder: Path) -> dict[str, str]:
     hashes = {}

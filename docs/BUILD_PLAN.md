@@ -312,7 +312,7 @@ Acceptance criteria:
 
 ## Phase 6: Build Tenant-Specific Adapters
 
-Status: Partly done.
+Status: Done.
 
 Goal: convert real tenant source files into the standardized contract.
 
@@ -325,6 +325,24 @@ Implemented:
   availability, matching, date requests, and ad hocs.
 - Supports simple `.xlsx` extraction for observed booking workbook sheets:
   `Bookings`, `Childs`, `Support Workers`, `Availability`, and `Matching`.
+- Supports observed July booking workbook columns such as `booking_date`,
+  `booking_start_time`, `booking_finish_time`, `lead_sw_id`, `2nd_sw_id`,
+  `2to1_required`, and `car`.
+- Expands recurring import-sheet bookings into concrete weekly standardized
+  sessions within the booking month; booking-shaped rows default to weekly
+  recurrence unless explicitly marked as non-recurring.
+- Expands explicitly recurring ad hoc request windows for supported frequencies
+  such as weekly, fortnightly, and daily; ad hoc rows remain one-off when
+  recurrence is absent because request wording can be more nuanced.
+- Supports workbook-style staff/service-user ID and postcode workbook headings such
+  as `sw_id`, `support_worker_id`, `su_id`, and service-user/support-worker
+  postcode variants.
+- Discovers raw date-request `.eml`, `.docx`, and `.txt` files under date
+  request folders, captures parseable notes and simple structured hints, and
+  emits low-confidence warnings where manual review is still required.
+- Discovers `.msg` date-request files and emits manual-review warnings rather
+  than silently dropping or pretending to parse unsupported Outlook binary
+  content.
 - Emits structured adapter warnings/errors for missing sources, missing workbook
   sheets, unresolved names, duplicate IDs, and incomplete rows.
 - Writes `adapter_report.json` and `import_manifest.json` with source refs.
@@ -332,15 +350,18 @@ Implemented:
   optional standardized-import validation.
 - Adds synthetic workbook adapter fixtures under `fixtures/workbook_adapter_csv/`.
 - Adds adapter tests for source immutability, standardized importer
-  compatibility, CLI validation, and missing required sources.
+  compatibility, CLI validation, missing required sources, July booking column
+  variants, raw email request ingestion, and `.msg` manual-review warnings.
 
-Still pending:
+Operational follow-up:
 
-- Direct parsing for raw date-request emails/documents.
-- Tenant-local alias configuration and fuzzy review workflow beyond normalized
-  exact-name/ID matching.
-- More complete workbook-shape coverage as additional anonymized source shapes
-  are captured.
+- Tenant-local alias configuration and fuzzy review workflow remain a later
+  product feature beyond normalized exact-name/ID matching.
+- Additional anonymized source shapes should be added as fixtures when new source
+  workbook/report variants are captured.
+- Binary Outlook `.msg` content still requires manual export to `.eml`, `.docx`,
+  `.txt`, or a reviewed structured CSV until a dedicated parser dependency is
+  approved.
 
 Initial adapter targets:
 
