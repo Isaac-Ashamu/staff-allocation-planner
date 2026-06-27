@@ -328,6 +328,13 @@ Implemented:
 - Supports observed July booking workbook columns such as `booking_date`,
   `booking_start_time`, `booking_finish_time`, `lead_sw_id`, `2nd_sw_id`,
   `2to1_required`, and `car`.
+- Resolves messy `lead_sw_id` / `2nd_sw_id` import-sheet cells that include
+  notes plus embedded SW names by matching against the staff source of truth.
+- Reads Excel cell comments/notes on `lead_sw_id` / `2nd_sw_id` cells and uses
+  them as SW-name fallbacks when visible cell values are opaque numeric IDs.
+- Creates warning-backed placeholder workers from import-sheet SW IDs and cell
+  notes when a booked SW is not present in the staff source, preserving the
+  assignment while keeping the data-quality gap visible.
 - Expands recurring import-sheet bookings into concrete weekly standardized
   sessions within the booking month; booking-shaped rows default to weekly
   recurrence unless explicitly marked as non-recurring.
@@ -337,12 +344,21 @@ Implemented:
 - Supports workbook-style staff/service-user ID and postcode workbook headings such
   as `sw_id`, `support_worker_id`, `su_id`, and service-user/support-worker
   postcode variants.
+- Supports multiple booking workbooks in one source folder, including separate
+  July import-sheet, staff/SU names-and-postcodes, and ad hoc request workbooks.
+- Supports headerless workbook-style SU postcode sheets where the first two columns
+  form the service-user display name and a later column contains postcode.
+- Supports ad hoc workbook columns such as `client_name`, `specific_day`,
+  `specific_time`, `sw_requested`, `sessions_notes`, and `notes_for_july` when
+  they can be parsed deterministically.
 - Discovers raw date-request `.eml`, `.docx`, and `.txt` files under date
   request folders, captures parseable notes and simple structured hints, and
   emits low-confidence warnings where manual review is still required.
 - Discovers `.msg` date-request files and emits manual-review warnings rather
   than silently dropping or pretending to parse unsupported Outlook binary
   content.
+- Discovers availability-report PDFs and emits manual-export/review warnings
+  rather than silently treating them as imported availability.
 - Emits structured adapter warnings/errors for missing sources, missing workbook
   sheets, unresolved names, duplicate IDs, and incomplete rows.
 - Writes `adapter_report.json` and `import_manifest.json` with source refs.
@@ -362,6 +378,8 @@ Operational follow-up:
 - Binary Outlook `.msg` content still requires manual export to `.eml`, `.docx`,
   `.txt`, or a reviewed structured CSV until a dedicated parser dependency is
   approved.
+- Availability-report PDFs still require manual export to `availability.csv` or
+  an availability workbook until a dedicated, reviewed PDF parser is added.
 
 Initial adapter targets:
 

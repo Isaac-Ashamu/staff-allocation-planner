@@ -12,6 +12,7 @@ import csv
 import email
 import hashlib
 import json
+import posixpath
 import re
 import zipfile
 from dataclasses import dataclass
@@ -177,11 +178,13 @@ def convert_workbook_sources(
     output_path = Path(output_dir)
     issues: list[AdapterIssue] = []
 
-    workbook_path = Path(booking_workbook) if booking_workbook else _first_xlsx(source_path)
+    workbook_path = Path(booking_workbook) if booking_workbook else None
     source_tables = _read_source_tables(source_path, workbook_path, issues)
     worker_rows = _workers(source_tables.get("workers", ()), issues)
+    worker_rows = _augment_workers_from_session_notes(worker_rows, source_tables.get("sessions", ()), issues)
     _warn_duplicate_names(worker_rows, "workers", issues)
     worker_lookup = _lookup(worker_rows, "worker_id", "name")
+    _add_session_worker_aliases(worker_lookup, source_tables.get("sessions", ()), issues)
     service_user_rows = _service_users(source_tables.get("service_users", ()), issues)
     _warn_duplicate_names(service_user_rows, "service_users", issues)
     service_user_lookup = _lookup(service_user_rows, "service_user_id", "name")
@@ -298,15 +301,18 @@ def _read_source_tables(
         else:
             tables[key] = ()
 
-    if booking_workbook and booking_workbook.is_file():
-        workbook_tables = _read_workbook_tables(booking_workbook, issues)
-        for key, rows in workbook_tables.items():
-            if rows:
-                tables[key] = rows
+    workbook_paths = (booking_workbook,) if booking_workbook else tuple(sorted(source_dir.glob("*.xlsx")))
+    for workbook_path in workbook_paths:
+        if workbook_path and workbook_path.is_file():
+            workbook_tables = _read_workbook_tables(workbook_path, issues)
+            for key, rows in workbook_tables.items():
+                if rows:
+                    tables[key] = tuple(tables.get(key, ())) + tuple(rows)
 
     request_rows = _read_request_files(source_dir, issues)
     if request_rows:
         tables["family_requests"] = tuple(tables.get("family_requests", ())) + tuple(request_rows)
+    _warn_availability_report_pdfs(source_dir, issues)
 
     for required_key in ("workers", "service_users", "sessions"):
         if not tables.get(required_key):
@@ -351,21 +357,22 @@ def _workers(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]) -> l
             _add_issue(issues, "error", "duplicate_worker_id", f"duplicate worker id {worker_id}", "workers", row_number, "worker_id")
             continue
         seen.add(worker_id)
-        modes = _modes(_value(row, "travel_modes", "transport", "travel", "drives"))
+        postcode = _postcode(_value(row, "postcode", "home_postcode", "staff_postcode", "sw_postcode", "support_worker_postcode", "address"))
+        modes = _modes(_value(row, "travel_modes", "transport", "travel", "drives", "how_they_get_to_sessions"))
         has_car = "true" if "drive" in modes or _truthy(_value(row, "has_car", "car", "drives")) else "false"
         output.append(
             {
                 "worker_id": worker_id,
                 "name": name,
                 "home_label": "",
-                "home_postcode": _value(row, "postcode", "home_postcode", "staff_postcode", "sw_postcode", "support_worker_postcode"),
+                "home_postcode": postcode,
                 "home_latitude": "",
                 "home_longitude": "",
-                "home_area": _area(_value(row, "area", "home_area", "postcode", "home_postcode", "staff_postcode", "sw_postcode", "support_worker_postcode")),
+                "home_area": _area(_value(row, "area", "home_area") or postcode),
                 "travel_modes": "|".join(sorted(modes or {"public_transport", "walk"})),
                 "has_car": has_car,
                 "skills": _pipe(_value(row, "skills", "training")),
-                "languages": _pipe(_value(row, "languages")),
+                "languages": _pipe(_value(row, "languages", "languages_spoken")),
                 "willing_areas": _pipe(_value(row, "willing_areas", "areas")),
                 "current_hours": _value(row, "current_hours", "hours") or "0",
                 "max_hours": _value(row, "max_hours"),
@@ -377,11 +384,118 @@ def _workers(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]) -> l
     return output
 
 
+def _augment_workers_from_session_notes(
+    worker_rows: list[dict[str, str]],
+    session_rows: Iterable[Mapping[str, str]],
+    issues: list[AdapterIssue],
+) -> list[dict[str, str]]:
+    augmented = list(worker_rows)
+    lookup = _lookup(augmented, "worker_id", "name")
+    seen_ids = {row["worker_id"] for row in augmented}
+    generated_by_id: dict[str, str] = {}
+    for row_number, row in enumerate(session_rows, start=2):
+        for value, note in _session_worker_value_notes(row):
+            if not note:
+                continue
+            if _resolve_reference_text(note, lookup, issues, "sessions", row_number, "assigned_worker_ids", warn=False):
+                continue
+            worker_id = value.strip() or _stable_id("worker", note)
+            if worker_id in seen_ids:
+                if generated_by_id.get(worker_id) and _norm_name(generated_by_id[worker_id]) != _norm_name(note):
+                    _add_issue(
+                        issues,
+                        "warning",
+                        "conflicting_import_sheet_worker_note",
+                        f"SW ID {worker_id} has conflicting note names: {generated_by_id[worker_id]} / {note}",
+                        "sessions",
+                        row_number,
+                        "assigned_worker_ids",
+                    )
+                continue
+            seen_ids.add(worker_id)
+            generated_by_id[worker_id] = note
+            augmented.append(
+                {
+                    "worker_id": worker_id,
+                    "name": note,
+                    "home_label": "",
+                    "home_postcode": "",
+                    "home_latitude": "",
+                    "home_longitude": "",
+                    "home_area": "",
+                    "travel_modes": "public_transport|walk",
+                    "has_car": "false",
+                    "skills": "",
+                    "languages": "",
+                    "willing_areas": "",
+                    "current_hours": "0",
+                    "max_hours": "",
+                    "preference_tags": "",
+                    "reliability_score": "",
+                    "source_ref": _source_ref("sessions", row_number),
+                }
+            )
+            lookup[_norm_name(worker_id)] = worker_id
+            lookup[_norm_name(note)] = worker_id
+            _add_issue(
+                issues,
+                "warning",
+                "worker_created_from_import_sheet_note",
+                f"created placeholder worker {worker_id} from import-sheet SW note",
+                "sessions",
+                row_number,
+                "assigned_worker_ids",
+            )
+    return augmented
+
+
+def _add_session_worker_aliases(
+    worker_lookup: dict[str, str],
+    session_rows: Iterable[Mapping[str, str]],
+    issues: list[AdapterIssue],
+) -> None:
+    aliases: dict[str, str] = {}
+    for row_number, row in enumerate(session_rows, start=2):
+        for value, note in _session_worker_value_notes(row):
+            if not value or not note:
+                continue
+            resolved_id = _resolve_reference_text(note, worker_lookup, issues, "sessions", row_number, "assigned_worker_ids", warn=False)
+            if not resolved_id:
+                continue
+            key = _norm_name(value)
+            if key in aliases and aliases[key] != resolved_id:
+                _add_issue(
+                    issues,
+                    "warning",
+                    "conflicting_import_sheet_worker_alias",
+                    f"SW ID {value} maps to multiple workers in cell notes",
+                    "sessions",
+                    row_number,
+                    "assigned_worker_ids",
+                )
+                continue
+            aliases[key] = resolved_id
+    worker_lookup.update(aliases)
+
+
+def _session_worker_value_notes(row: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+    return (
+        (
+            _value(row, "lead_sw_id", "lead_worker_id", "lead_staff_id", "lead_support_worker"),
+            _value(row, "lead_sw_id_note", "lead_worker_id_note", "lead_staff_id_note", "lead_support_worker_note"),
+        ),
+        (
+            _value(row, "2nd_sw_id", "second_sw_id", "second_worker_id", "second_staff_id", "second_support_worker"),
+            _value(row, "2nd_sw_id_note", "second_sw_id_note", "second_worker_id_note", "second_staff_id_note", "second_support_worker_note"),
+        ),
+    )
+
+
 def _service_users(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]) -> list[dict[str, str]]:
     output = []
     seen: set[str] = set()
     for row_number, row in enumerate(rows, start=2):
-        name = _value(row, "name", "child_name", "service_user", "service_user_name", "child")
+        name = _value(row, "name", "child_name", "client_name", "service_user", "service_user_name", "child")
         if not name:
             _add_issue(issues, "warning", "blank_service_user_name", "blank service-user row skipped", "service_users", row_number, "name")
             continue
@@ -395,12 +509,12 @@ def _service_users(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]
                 "service_user_id": service_user_id,
                 "name": name,
                 "home_label": "",
-                "home_postcode": _value(row, "postcode", "home_postcode", "child_postcode", "su_postcode", "service_user_postcode"),
+                "home_postcode": _postcode(_value(row, "postcode", "home_postcode", "child_postcode", "su_postcode", "service_user_postcode", "address")),
                 "home_latitude": "",
                 "home_longitude": "",
-                "home_area": _area(_value(row, "area", "home_area", "postcode", "home_postcode", "child_postcode", "su_postcode", "service_user_postcode")),
+                "home_area": _area(_value(row, "area", "home_area", "postcode", "home_postcode", "child_postcode", "su_postcode", "service_user_postcode", "address")),
                 "support_level": _value(row, "support_level", "support") or "standard",
-                "required_worker_count": _value(row, "required_worker_count", "workers_required", "staff_required") or "1",
+                "required_worker_count": _value(row, "required_worker_count", "workers_required", "staff_required") or ("2" if _truthy_2_to_1(_value(row, "2_1", "2to1", "support_ratio")) else "1"),
                 "requires_driver": _bool_text(_value(row, "requires_driver", "driver_required", "needs_driver")),
                 "required_skills": _pipe(_value(row, "required_skills", "risks", "risk_tags")),
                 "communication_needs": _pipe(_value(row, "communication_needs")),
@@ -424,8 +538,24 @@ def _sessions(
     output = []
     seen: set[str] = set()
     for row_number, row in enumerate(rows, start=2):
-        name = _value(row, "service_user_id", "child_id", "su_id", "child_name", "service_user", "service_user_name", "child", "name")
-        service_user_id = _resolve_name(name, service_user_lookup, issues, "sessions", row_number, "service_user")
+        service_user_id = _resolve_first(
+            (
+                _value(row, "service_user_id"),
+                _value(row, "child_id"),
+                _value(row, "su_id"),
+                _value(row, "child_name"),
+                _value(row, "client_name"),
+                _value(row, "service_user"),
+                _value(row, "service_user_name"),
+                _value(row, "child"),
+                _value(row, "name"),
+            ),
+            service_user_lookup,
+            issues,
+            "sessions",
+            row_number,
+            "service_user",
+        )
         start = _datetime_text(row, "start", "session_start")
         end = _datetime_text(row, "end", "session_end")
         if not service_user_id or not start or not end:
@@ -534,10 +664,10 @@ def _family_requests(
 ) -> list[dict[str, str]]:
     output = []
     for row_number, row in enumerate(rows, start=2):
-        service_user_id = _resolve_name(_value(row, "service_user_id", "child_id", "su_id", "child_name", "service_user", "service_user_name", "child"), service_user_lookup, issues, "family_requests", row_number, "service_user")
+        service_user_id = _resolve_name(_value(row, "service_user_id", "child_id", "su_id", "child_name", "client_name", "service_user", "service_user_name", "child", "name"), service_user_lookup, issues, "family_requests", row_number, "service_user")
         if not service_user_id:
             continue
-        requested = _resolve_many(_value(row, "requested_worker_ids", "requested_staff", "preferred_worker", "staff", "support_worker", "worker"), worker_lookup, issues, "family_requests", row_number, "requested_worker_ids")
+        requested = _resolve_many(_value(row, "requested_worker_ids", "requested_staff", "preferred_worker", "staff", "support_worker", "worker", "sw_requested", "specific_sw"), worker_lookup, issues, "family_requests", row_number, "requested_worker_ids")
         avoided = _resolve_many(_value(row, "avoided_worker_ids", "avoided_staff", "avoid_staff", "avoid_worker"), worker_lookup, issues, "family_requests", row_number, "avoided_worker_ids")
         output.append(
             {
@@ -548,7 +678,7 @@ def _family_requests(
                 "preferred_days": _preferred_request_days(row),
                 "preferred_time_ranges": "|".join(_family_request_time_ranges(row, issues, row_number)),
                 "unavailable_time_ranges": _pipe(_value(row, "unavailable_time_ranges")),
-                "notes": _value(row, "notes", "request"),
+                "notes": _value(row, "notes", "request", "sessions_notes", "notes_for_july"),
                 "source_ref": _source_ref("family_requests", row_number),
             }
         )
@@ -568,13 +698,14 @@ def _assigned_workers(
     row_number: int,
 ) -> list[str]:
     values = [
-        _value(row, "assigned_worker_ids", "staff", "worker", "support_worker"),
-        _value(row, "lead_sw_id", "lead_worker_id", "lead_staff_id", "lead_support_worker"),
-        _value(row, "2nd_sw_id", "second_sw_id", "second_worker_id", "second_staff_id", "second_support_worker"),
-    ]
+        (
+            _value(row, "assigned_worker_ids", "staff", "worker", "support_worker"),
+            "",
+        )
+    ] + list(_session_worker_value_notes(row))
     resolved: list[str] = []
-    for value in values:
-        for worker_id in _resolve_many(value, worker_lookup, issues, "sessions", row_number, "assigned_worker_ids"):
+    for value, note in values:
+        for worker_id in _resolve_many_candidates((value, note), worker_lookup, issues, "sessions", row_number, "assigned_worker_ids"):
             if worker_id not in resolved:
                 resolved.append(worker_id)
     return resolved
@@ -619,6 +750,10 @@ def _family_request_time_ranges(
         if start and end:
             intervals = [f"{start}/{end}"]
     if not intervals:
+        interval = _specific_day_time_interval(row, issues, row_number)
+        if interval:
+            intervals = [interval]
+    if not intervals:
         return []
     frequency = _ad_hoc_recurrence_frequency(row)
     if frequency is None:
@@ -647,6 +782,84 @@ def _family_request_time_ranges(
             for item_start, item_end in _expand_interval(start, end, step, _request_recurrence_until(row, start))
         )
     return list(dict.fromkeys(expanded))
+
+
+def _specific_day_time_interval(
+    row: Mapping[str, str],
+    issues: list[AdapterIssue],
+    row_number: int,
+) -> str:
+    day_text = _value(row, "specific_day", "date", "session_date", "booking_date")
+    time_text = _value(row, "specific_time", "time", "session_time", "requested_time")
+    if not day_text or not time_text:
+        return ""
+    time_range = _parse_time_range_text(time_text)
+    if time_range is None:
+        _add_issue(
+            issues,
+            "warning",
+            "unparsed_specific_time",
+            f"could not parse specific_time value: {time_text}",
+            "family_requests",
+            row_number,
+            "specific_time",
+        )
+        return ""
+    start_time, end_time = time_range
+    try:
+        day = _coerce_date(day_text)
+    except ValueError:
+        if issues:
+            _add_issue(
+                issues,
+                "warning",
+                "unparsed_specific_day",
+                f"could not parse specific_day value: {day_text}",
+                "family_requests",
+                row_number,
+                "specific_day",
+            )
+        return ""
+    return f"{day}T{start_time}+01:00/{day}T{end_time}+01:00"
+
+
+def _parse_time_range_text(value: str) -> tuple[str, str] | None:
+    text = value.strip().lower()
+    text = text.replace("–", "-").replace("—", "-").replace(" to ", "-")
+    match = re.search(
+        r"(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*-\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)",
+        text,
+    )
+    if not match:
+        return None
+    start = _coerce_clock_text(match.group(1), match.group(2))
+    end = _coerce_clock_text(match.group(2), match.group(1))
+    if start >= end:
+        return None
+    return start, end
+
+
+def _coerce_clock_text(value: str, other: str = "") -> str:
+    text = value.strip().lower().replace(" ", "")
+    meridiem = ""
+    if text.endswith(("am", "pm")):
+        meridiem = text[-2:]
+        text = text[:-2]
+    else:
+        other_text = other.strip().lower().replace(" ", "")
+        if other_text.endswith(("am", "pm")):
+            meridiem = other_text[-2:]
+    if ":" in text:
+        hour_text, minute_text = text.split(":", 1)
+    else:
+        hour_text, minute_text = text, "00"
+    hour = int(hour_text)
+    minute = int(minute_text[:2])
+    if meridiem == "pm" and hour < 12:
+        hour += 12
+    if meridiem == "am" and hour == 12:
+        hour = 0
+    return f"{hour:02d}:{minute:02d}:00"
 
 
 def _ad_hoc_recurrence_frequency(row: Mapping[str, str]) -> str | None:
@@ -790,6 +1003,19 @@ def _request_file_row(path: Path, issues: list[AdapterIssue]) -> dict[str, str]:
     }
 
 
+def _warn_availability_report_pdfs(source_dir: Path, issues: list[AdapterIssue]) -> None:
+    for path in sorted(source_dir.rglob("*.pdf")):
+        if "availability" not in _norm_name(str(path)):
+            continue
+        _add_issue(
+            issues,
+            "warning",
+            "availability_report_pdf_requires_review",
+            "availability report PDF discovered; export it to availability.csv or an availability workbook before standardized import",
+            str(path),
+        )
+
+
 def _request_text(path: Path, issues: list[AdapterIssue]) -> str:
     suffix = path.suffix.lower()
     try:
@@ -895,13 +1121,90 @@ def _read_workbook_tables(path: Path, issues: list[AdapterIssue]) -> dict[str, t
     except (KeyError, zipfile.BadZipFile, ElementTree.ParseError) as error:
         _add_issue(issues, "error", "invalid_workbook", f"could not read workbook structure: {error}", str(path))
         return tables
-    for sheet_name, target in BOOKING_SHEETS.items():
-        rows = sheets.get(sheet_name)
-        if rows is None:
+    is_booking_workbook = "Bookings" in sheets or "import sheet" in _norm_name(path.name)
+    if is_booking_workbook:
+        for sheet_name in BOOKING_SHEETS:
+            if sheet_name not in sheets:
+                _add_issue(issues, "warning", "missing_workbook_sheet", f"workbook sheet is missing: {sheet_name}", str(path))
+    for sheet_name, rows in sheets.items():
+        target = _workbook_sheet_target(sheet_name)
+        if target is None:
+            continue
+        normalized_rows = rows
+        if target == "service_users" and _looks_like_headerless_service_user_sheet(rows):
+            normalized_rows = tuple(_headerless_service_user_rows(rows))
+        if not normalized_rows:
             _add_issue(issues, "warning", "missing_workbook_sheet", f"workbook sheet is missing: {sheet_name}", str(path))
             continue
-        tables[target] = rows
+        tables[target] = tuple(tables.get(target, ())) + tuple(normalized_rows)
     return tables
+
+
+def _workbook_sheet_target(sheet_name: str) -> str | None:
+    if sheet_name in BOOKING_SHEETS:
+        return BOOKING_SHEETS[sheet_name]
+    normalized = _norm_name(sheet_name)
+    if normalized in {"staff", "support workers", "support worker", "workers"}:
+        return "workers"
+    if normalized in {"su", "service users", "service user", "children", "childs"}:
+        return "service_users"
+    if normalized in {"bookings", "booking", "import sheet"}:
+        return "sessions"
+    if normalized in {"availability", "availability report"}:
+        return "availability"
+    if normalized in {"matching", "matches", "compatibility"}:
+        return "compatibility"
+    if normalized in {"ad hocs", "ad hoc", "date requests", "date request", "phase 1", "phase 2"}:
+        return "family_requests"
+    return None
+
+
+def _looks_like_headerless_service_user_sheet(rows: tuple[dict[str, str], ...]) -> bool:
+    if not rows:
+        return False
+    known = {
+        "name",
+        "child_name",
+        "client_name",
+        "service_user",
+        "service_user_name",
+        "postcode",
+        "home_postcode",
+        "child_postcode",
+        "su_postcode",
+    }
+    first_keys = set(rows[0])
+    return not first_keys.intersection(known) and any(_postcode(key) for key in first_keys)
+
+
+def _headerless_service_user_rows(rows: tuple[dict[str, str], ...]) -> list[dict[str, str]]:
+    reconstructed: list[list[str]] = [list(rows[0].keys())]
+    reconstructed.extend(list(row.values()) for row in rows)
+    normalized = []
+    for values in reconstructed:
+        values = [value.replace("_", " ").strip() for value in values if value.strip()]
+        if not values:
+            continue
+        postcode = next((_postcode(value) for value in values if _postcode(value)), "")
+        name_parts = []
+        for value in values:
+            if _postcode(value) or _truthy_2_to_1(value) or _norm_name(value) in {"male", "female"}:
+                continue
+            name_parts.append(value)
+            if len(name_parts) == 2:
+                break
+        name = " ".join(name_parts).strip().title()
+        if not name:
+            continue
+        normalized.append(
+            {
+                "name": name,
+                "postcode": postcode,
+                "required_worker_count": "2" if any(_truthy_2_to_1(value) for value in values) else "1",
+                "support_level": "2_to_1" if any(_truthy_2_to_1(value) for value in values) else "standard",
+            }
+        )
+    return normalized
 
 
 def _xlsx_sheets(path: Path) -> dict[str, tuple[dict[str, str], ...]]:
@@ -924,8 +1227,9 @@ def _xlsx_sheets(path: Path) -> dict[str, tuple[dict[str, str], ...]]:
             rel_id = sheet.attrib[f"{{{ns['rel']}}}id"]
             target = rel_targets[rel_id]
             worksheet_path = "xl/" + target.lstrip("/")
-            matrix = _worksheet_matrix(archive.read(worksheet_path), shared_strings, ns)
-            sheets[name] = _matrix_to_dicts(matrix)
+            rows = _worksheet_rows(archive.read(worksheet_path), shared_strings, ns)
+            comments = _worksheet_comments(archive, worksheet_path, ns)
+            sheets[name] = _worksheet_rows_to_dicts(rows, comments)
         return sheets
 
 
@@ -939,22 +1243,65 @@ def _shared_strings(archive: zipfile.ZipFile, ns: Mapping[str, str]) -> list[str
     return values
 
 
-def _worksheet_matrix(xml_bytes: bytes, shared_strings: list[str], ns: Mapping[str, str]) -> list[list[str]]:
+def _worksheet_rows(xml_bytes: bytes, shared_strings: list[str], ns: Mapping[str, str]) -> list[tuple[int, dict[int, tuple[str, str]]]]:
     root = ElementTree.fromstring(xml_bytes)
     rows = []
     for row in root.findall("main:sheetData/main:row", ns):
-        values = []
-        current_index = 0
+        values: dict[int, tuple[str, str]] = {}
         for cell in row.findall("main:c", ns):
             cell_ref = cell.attrib.get("r", "")
-            index = _column_index(re.sub(r"\d+", "", cell_ref)) if cell_ref else current_index
-            while current_index < index:
-                values.append("")
-                current_index += 1
-            values.append(_cell_value(cell, shared_strings, ns))
-            current_index += 1
-        rows.append(values)
+            index = _column_index(re.sub(r"\d+", "", cell_ref)) if cell_ref else len(values)
+            values[index] = (cell_ref, _cell_value(cell, shared_strings, ns))
+        row_number = int(row.attrib.get("r", len(rows) + 1))
+        rows.append((row_number, values))
     return rows
+
+
+def _worksheet_comments(
+    archive: zipfile.ZipFile,
+    worksheet_path: str,
+    ns: Mapping[str, str],
+) -> dict[str, str]:
+    rels_path = posixpath.join(
+        posixpath.dirname(worksheet_path),
+        "_rels",
+        posixpath.basename(worksheet_path) + ".rels",
+    )
+    if rels_path not in archive.namelist():
+        return {}
+    root = ElementTree.fromstring(archive.read(rels_path))
+    comments_path = ""
+    for rel in root.findall("pkg:Relationship", ns):
+        if rel.attrib.get("Type", "").endswith("/comments"):
+            comments_path = posixpath.normpath(posixpath.join(posixpath.dirname(worksheet_path), rel.attrib["Target"]))
+            break
+    if not comments_path or comments_path not in archive.namelist():
+        return {}
+    return _comments_from_xml(archive.read(comments_path), ns)
+
+
+def _comments_from_xml(xml_bytes: bytes, ns: Mapping[str, str]) -> dict[str, str]:
+    root = ElementTree.fromstring(xml_bytes)
+    authors = [
+        "".join(author.itertext()).strip()
+        for author in root.findall(".//main:author", ns)
+    ]
+    comments = {}
+    for comment in root.findall(".//main:comment", ns):
+        ref = comment.attrib.get("ref", "")
+        if not ref:
+            continue
+        author_id = int(comment.attrib.get("authorId", "0") or 0)
+        author = authors[author_id] if author_id < len(authors) else ""
+        text = " ".join("".join(item.text or "" for item in comment.findall(".//main:t", ns)).split())
+        comments[ref] = _strip_comment_author(text, author)
+    return comments
+
+
+def _strip_comment_author(text: str, author: str) -> str:
+    if author and text.lower().startswith(author.lower() + ":"):
+        return text[len(author) + 1 :].strip()
+    return text.strip()
 
 
 def _cell_value(cell, shared_strings: list[str], ns: Mapping[str, str]) -> str:
@@ -968,17 +1315,33 @@ def _cell_value(cell, shared_strings: list[str], ns: Mapping[str, str]) -> str:
     return value.text.strip()
 
 
-def _matrix_to_dicts(matrix: list[list[str]]) -> tuple[dict[str, str], ...]:
-    while matrix and not any(cell.strip() for cell in matrix[0]):
-        matrix.pop(0)
-    if not matrix:
+def _worksheet_rows_to_dicts(
+    worksheet_rows: list[tuple[int, dict[int, tuple[str, str]]]],
+    comments: Mapping[str, str],
+) -> tuple[dict[str, str], ...]:
+    while worksheet_rows and not any(value.strip() for _, value in worksheet_rows[0][1].values()):
+        worksheet_rows.pop(0)
+    if not worksheet_rows:
         return ()
-    headers = [_normalize_header(value) for value in matrix[0]]
+    header_cells = worksheet_rows[0][1]
+    max_index = max(header_cells) if header_cells else -1
+    headers = [
+        _normalize_header(header_cells.get(index, ("", ""))[1])
+        for index in range(max_index + 1)
+    ]
     rows = []
-    for values in matrix[1:]:
-        if not any(value.strip() for value in values):
+    for _, cells in worksheet_rows[1:]:
+        if not any(value.strip() for _, value in cells.values()):
             continue
-        rows.append({headers[index]: values[index].strip() if index < len(values) else "" for index in range(len(headers)) if headers[index]})
+        row = {}
+        for index, header in enumerate(headers):
+            if not header:
+                continue
+            cell_ref, value = cells.get(index, ("", ""))
+            row[header] = value.strip()
+            if cell_ref and comments.get(cell_ref):
+                row[f"{header}_note"] = comments[cell_ref]
+        rows.append(row)
     return tuple(rows)
 
 
@@ -1064,6 +1427,35 @@ def _resolve_name(
     return ""
 
 
+def _resolve_first(
+    values: Iterable[str],
+    lookup: Mapping[str, str],
+    issues: list[AdapterIssue],
+    source: str,
+    row_number: int,
+    field: str,
+) -> str:
+    unresolved = []
+    for value in values:
+        if not value:
+            continue
+        key = _norm_name(value)
+        if key in lookup:
+            return lookup[key]
+        unresolved.append(value)
+    if unresolved:
+        _add_issue(
+            issues,
+            "warning",
+            "unresolved_name",
+            f"could not resolve {field}: {' / '.join(unresolved)}",
+            source,
+            row_number,
+            field,
+        )
+    return ""
+
+
 def _resolve_many(
     value: str,
     lookup: Mapping[str, str],
@@ -1074,10 +1466,105 @@ def _resolve_many(
 ) -> list[str]:
     resolved = []
     for item in _split(value):
-        item_id = _resolve_name(item, lookup, issues, source, row_number, field)
+        item_id = _resolve_reference_text(item, lookup, issues, source, row_number, field)
         if item_id and item_id not in resolved:
             resolved.append(item_id)
     return resolved
+
+
+def _resolve_many_candidates(
+    values: Iterable[str],
+    lookup: Mapping[str, str],
+    issues: list[AdapterIssue],
+    source: str,
+    row_number: int,
+    field: str,
+) -> list[str]:
+    candidates = [item for value in values for item in _split(value)]
+    resolved = []
+    for item in candidates:
+        item_id = _resolve_reference_text(item, lookup, issues, source, row_number, field, warn=False)
+        if item_id and item_id not in resolved:
+            resolved.append(item_id)
+    if resolved:
+        return resolved
+    if candidates:
+        _resolve_reference_text(candidates[-1], lookup, issues, source, row_number, field, warn=True)
+    return []
+
+
+def _resolve_reference_text(
+    value: str,
+    lookup: Mapping[str, str],
+    issues: list[AdapterIssue],
+    source: str,
+    row_number: int,
+    field: str,
+    *,
+    warn: bool = True,
+) -> str:
+    if not value:
+        return ""
+    key = _norm_name(value)
+    if key in lookup:
+        return lookup[key]
+
+    matches = {
+        resolved_id
+        for lookup_key, resolved_id in lookup.items()
+        if _lookup_key_in_reference(lookup_key, key)
+    }
+    if not matches:
+        matches = _partial_reference_matches(key, lookup)
+    if len(matches) == 1:
+        return next(iter(matches))
+    if len(matches) > 1:
+        if warn:
+            _add_issue(
+                issues,
+                "warning",
+                "ambiguous_reference_text",
+                f"could not choose one {field} from note text: {value}",
+                source,
+                row_number,
+                field,
+            )
+        return ""
+
+    if warn:
+        _add_issue(issues, "warning", "unresolved_name", f"could not resolve {field}: {value}", source, row_number, field)
+    return ""
+
+
+def _lookup_key_in_reference(lookup_key: str, reference_key: str) -> bool:
+    if len(lookup_key) < 4 or not reference_key:
+        return False
+    return re.search(rf"(^| ){re.escape(lookup_key)}($| )", reference_key) is not None
+
+
+def _partial_reference_matches(reference_key: str, lookup: Mapping[str, str]) -> set[str]:
+    reference_tokens = reference_key.split()
+    if not reference_tokens:
+        return set()
+    matches = set()
+    for lookup_key, resolved_id in lookup.items():
+        lookup_tokens = lookup_key.split()
+        if len(lookup_tokens) < 2:
+            continue
+        if lookup_tokens[0] == "worker":
+            continue
+        first = lookup_tokens[0]
+        last = lookup_tokens[-1]
+        if len(reference_tokens) == 1:
+            if len(reference_tokens[0]) >= 3 and reference_tokens[0] == first:
+                matches.add(resolved_id)
+        elif len(reference_tokens) == 2:
+            ref_first, ref_last = reference_tokens
+            if ref_first == first and len(ref_last) == 1 and last.startswith(ref_last):
+                matches.add(resolved_id)
+            elif ref_first == first and ref_last == last:
+                matches.add(resolved_id)
+    return matches
 
 
 def _value(row: Mapping[str, str], *keys: str) -> str:
@@ -1092,12 +1579,12 @@ def _datetime_text(row: Mapping[str, str], *keys: str) -> str:
     value = _value(row, *keys)
     if value:
         return _coerce_datetime(value)
-    date = _value(row, "date", "session_date", "booking_date")
-    start = _value(row, "start_time", "from", "booking_start_time")
+    date = _value(row, "date", "session_date", "booking_date", "available_date", "specific_day")
+    start = _value(row, "start_time", "from", "booking_start_time", "available_start", "available_start_time")
     end_key = keys[-1] if keys else ""
     wants_end = any(token in key for key in keys for token in ("end", "finish", "to"))
     if wants_end:
-        start = _value(row, "end_time", "to", "booking_finish_time", "finish_time")
+        start = _value(row, "end_time", "to", "booking_finish_time", "finish_time", "available_end", "available_end_time")
     if date and start:
         combined = f"{_coerce_date(date)}T{_coerce_time(start)}"
         if "+" not in combined and not combined.endswith("Z"):
@@ -1224,8 +1711,25 @@ def _truthy(value: str) -> bool:
     return value.strip().lower() in {"true", "yes", "y", "1", "drive", "driver", "car"}
 
 
+def _truthy_2_to_1(value: str) -> bool:
+    text = _norm_name(value)
+    return text in {"2 1", "2 to 1", "2to1", "two to one", "yes", "y", "true", "1"}
+
+
 def _bool_text(value: str) -> str:
     return "true" if _truthy(value) else "false"
+
+
+def _postcode(value: str) -> str:
+    normalized = value.replace("_", " ").upper()
+    match = re.search(r"\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b", normalized)
+    if not match:
+        text = normalized.strip()
+        if re.fullmatch(r"[A-Z]{1,2}\d[A-Z\d]?(?:\s*\d[A-Z]{2})?", text):
+            return text
+        return ""
+    postcode = match.group(1).replace(" ", "")
+    return f"{postcode[:-3]} {postcode[-3:]}"
 
 
 def _area(value: str) -> str:
@@ -1268,6 +1772,8 @@ def _source_refs(source_dir: Path, booking_workbook: str | Path | None) -> set[s
     refs = {str(source_dir / filename) for filename in SOURCE_FILES.values() if (source_dir / filename).is_file()}
     if booking_workbook:
         refs.add(str(Path(booking_workbook)))
+    else:
+        refs.update(str(path) for path in sorted(source_dir.glob("*.xlsx")))
     for path in sorted(source_dir.rglob("*")):
         if path.is_file() and path.suffix.lower() in REQUEST_FILE_EXTENSIONS:
             refs.add(str(path))
