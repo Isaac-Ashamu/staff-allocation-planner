@@ -23,6 +23,8 @@ Done:
 - Executable standardized CSV v1 import contract is documented with synthetic
   fixtures.
 - Standardized CSV v1 importer loads validated fixtures into `PlanningState`.
+- First care-provider adapter converts synthetic workbook-shaped source exports into
+  standardized CSV v1 output.
 - Upgrade roadmap is documented.
 
 Partly done:
@@ -32,13 +34,13 @@ Partly done:
 - Travel is represented in the model, but only via a pluggable estimator.
 - Exogenous events exist for worker unavailability, family requests, and stale
   service-user profiles; Phase 1 repair behavior is covered by tests.
-- Local source-data examples exist, but adapters are intentionally not part of
-  the active rebuild path yet.
+- Local source-data examples exist; the first adapter path is available, but
+  broader raw email/document adapters are still pending.
 
 Not done:
 
 - Data-quality validation report.
-- Tenant-specific workbook/email adapters.
+- Broader tenant-specific email/document adapters.
 - Persistent database.
 - API service.
 - Review UI.
@@ -310,9 +312,35 @@ Acceptance criteria:
 
 ## Phase 6: Build Tenant-Specific Adapters
 
-Status: Pending.
+Status: Partly done.
 
 Goal: convert real tenant source files into the standardized contract.
+
+Implemented:
+
+- Added `booking_recommender.adapters.workbook` for workbook-shaped source exports.
+- Reads source files as read-only inputs and writes derived standardized CSV v1
+  outputs to a caller-provided output folder.
+- Supports synthetic CSV exports for staff, service users, sessions,
+  availability, matching, date requests, and ad hocs.
+- Supports simple `.xlsx` extraction for observed booking workbook sheets:
+  `Bookings`, `Childs`, `Support Workers`, `Availability`, and `Matching`.
+- Emits structured adapter warnings/errors for missing sources, missing workbook
+  sheets, unresolved names, duplicate IDs, and incomplete rows.
+- Writes `adapter_report.json` and `import_manifest.json` with source refs.
+- Adds `workbook-adapter` / `python -m booking_recommender.adapters.workbook` CLI with
+  optional standardized-import validation.
+- Adds synthetic workbook adapter fixtures under `fixtures/workbook_adapter_csv/`.
+- Adds adapter tests for source immutability, standardized importer
+  compatibility, CLI validation, and missing required sources.
+
+Still pending:
+
+- Direct parsing for raw date-request emails/documents.
+- Tenant-local alias configuration and fuzzy review workflow beyond normalized
+  exact-name/ID matching.
+- More complete workbook-shape coverage as additional anonymized source shapes
+  are captured.
 
 Initial adapter targets:
 

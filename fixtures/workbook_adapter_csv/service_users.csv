@@ -1,0 +1,3 @@
+child_id,name,postcode,support_level,required_worker_count,requires_driver,required_skills,risk_tags,profile_is_stale
+su-cedar,Cedar Child,AA1 3AA,standard,1,false,visual_support,road_safety,false
+su-brook,Brook Child,AA2 4AA,standard,1,true,road_safety,transport,false

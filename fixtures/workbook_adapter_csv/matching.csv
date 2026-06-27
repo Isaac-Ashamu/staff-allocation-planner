@@ -1,0 +1,5 @@
+staff_name,child_name,status,reason
+Lane Worker,Cedar Child,appropriate,synthetic good match
+Moss Worker,Cedar Child,appropriate,synthetic backup
+Lane Worker,Brook Child,appropriate,synthetic driver match
+Moss Worker,Brook Child,inappropriate,synthetic driver requirement

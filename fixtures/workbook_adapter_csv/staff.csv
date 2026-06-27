@@ -1,0 +1,3 @@
+staff_id,name,postcode,travel_modes,has_car,skills,willing_areas,current_hours,max_hours
+worker-lane,Lane Worker,AA1 1AA,drive|walk,true,road_safety|visual_support,AA1|AA2,2,20
+worker-moss,Moss Worker,AA2 2AA,bus|walk,false,visual_support,AA2,4,16

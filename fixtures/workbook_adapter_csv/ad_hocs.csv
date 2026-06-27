@@ -1,0 +1,2 @@
+request_id,child_name,requested_staff,preferred_days,preferred_time_ranges,notes
+adhoc-brook,Brook Child,Lane Worker,4,2026-07-10T14:00:00+01:00/2026-07-10T16:00:00+01:00,synthetic ad hoc request
