@@ -270,6 +270,105 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertEqual(("900",), tuple(item.worker_id for item in session.assigned))
             self.assertIn("worker_created_from_import_sheet_note", {issue.code for issue in report.warnings})
 
+    def test_local_alias_config_resolves_workers_service_users_and_local_records(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            alias_path = Path(temp_dir) / "aliases.local.json"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "sessions.csv").write_text(
+                "\n".join(
+                    [
+                        "booking_id,child_name,booking_date,booking_start_time,booking_finish_time,lead_sw_id,2to1_required,car,recurring",
+                        "booking-alias,Cedar Kid,2026-07-10,14:00,16:00,LW,false,false,false",
+                        "booking-local,Trace Child,2026-07-11,14:00,16:00,LW,true,false,false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            alias_path.write_text(
+                json.dumps(
+                    {
+                        "worker_aliases": {"Lane Worker": ["LW"]},
+                        "service_user_aliases": {"Cedar Child": ["Cedar Kid"]},
+                        "service_users": [
+                            {
+                                "service_user_id": "su-trace",
+                                "name": "Trace Child",
+                                "postcode": "ZZ9 9ZZ",
+                                "support_level": "2:1",
+                                "required_worker_count": 2,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            report = convert_workbook_sources(
+                source_dir,
+                output_dir,
+                alias_config_path=alias_path,
+                import_run_id="import-workbook-aliases",
+            )
+            result = load_standardized_csv(output_dir)
+
+            self.assertEqual("su-cedar", result.state.sessions["booking-alias"].service_user_id)
+            self.assertEqual(("worker-lane",), tuple(item.worker_id for item in result.state.sessions["booking-alias"].assigned))
+            self.assertIn("su-trace", result.state.service_users)
+            self.assertEqual("su-trace", result.state.sessions["booking-local"].service_user_id)
+            self.assertEqual("ZZ9 9ZZ", result.state.service_users["su-trace"].home_location.postcode)
+            self.assertIn("service_user_added_from_alias_config", {issue.code for issue in report.warnings})
+
+    def test_combined_family_request_service_user_aliases_split_into_two_requests(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            alias_path = Path(temp_dir) / "aliases.local.json"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "date_requests.csv").write_text(
+                "\n".join(
+                    [
+                        "request_id,child_name,requested_staff,preferred_days,preferred_time_ranges,notes",
+                        "request-combined,Cedar C Brook B,Lane Worker,4,2026-07-10T10:00:00+01:00/2026-07-10T12:00:00+01:00,synthetic combined request",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (source_dir / "ad_hocs.csv").unlink()
+            alias_path.write_text(
+                json.dumps(
+                    {
+                        "service_user_aliases": {
+                            "Cedar Child": ["Cedar C"],
+                            "Brook Child": ["Brook B"],
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            convert_workbook_sources(
+                source_dir,
+                output_dir,
+                alias_config_path=alias_path,
+                import_run_id="import-workbook-combined-request",
+            )
+            result = load_standardized_csv(output_dir)
+
+            combined_requests = [
+                request
+                for request in result.state.family_requests
+                if request.id.startswith("request-combined")
+            ]
+            self.assertEqual(2, len(combined_requests))
+            self.assertEqual(
+                ["su-brook", "su-cedar"],
+                sorted(request.service_user_id for request in combined_requests),
+            )
+
     def test_import_sheet_bookings_default_to_weekly_recurrence_within_month(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_dir = Path(temp_dir) / "source"

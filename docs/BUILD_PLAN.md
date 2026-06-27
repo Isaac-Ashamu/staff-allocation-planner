@@ -344,6 +344,10 @@ Implemented:
 - Supports workbook-style staff/service-user ID and postcode workbook headings such
   as `sw_id`, `support_worker_id`, `su_id`, and service-user/support-worker
   postcode variants.
+- Supports ignored tenant-local alias config at
+  `RecommenderSystem/config/aliases.local.json` for worker aliases,
+  service-user aliases, and local service-user records needed to correct source
+  typos without mutating raw workbooks.
 - Supports multiple booking workbooks in one source folder, including separate
   July import-sheet, staff/SU names-and-postcodes, and ad hoc request workbooks.
 - Supports headerless workbook-style SU postcode sheets where the first two columns
@@ -371,8 +375,9 @@ Implemented:
 
 Operational follow-up:
 
-- Tenant-local alias configuration and fuzzy review workflow remain a later
-  product feature beyond normalized exact-name/ID matching.
+- Tenant-local alias configuration now exists for reviewed exact corrections;
+  broader fuzzy review workflow remains a later product feature beyond
+  normalized exact-name/ID matching.
 - Additional anonymized source shapes should be added as fixtures when new source
   workbook/report variants are captured.
 - Binary Outlook `.msg` content still requires manual export to `.eml`, `.docx`,

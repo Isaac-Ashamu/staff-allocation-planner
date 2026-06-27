@@ -17,5 +17,14 @@
       "Test Worker Two",
       "Worker B"
     ]
-  }
+  },
+  "service_users": [
+    {
+      "service_user_id": "su-synthetic-local",
+      "name": "Synthetic Local Service User",
+      "postcode": "ZZ1 1ZZ",
+      "support_level": "2:1",
+      "required_worker_count": 2
+    }
+  ]
 }

@@ -170,6 +170,7 @@ def convert_workbook_sources(
     output_dir: str | Path,
     *,
     booking_workbook: str | Path | None = None,
+    alias_config_path: str | Path | None = None,
     import_run_id: str | None = None,
     imported_at: datetime | None = None,
     source_system: str = "workbook-adapter",
@@ -180,14 +181,18 @@ def convert_workbook_sources(
 
     workbook_path = Path(booking_workbook) if booking_workbook else None
     source_tables = _read_source_tables(source_path, workbook_path, issues)
+    alias_config = _read_alias_config(_alias_config_path(source_path, alias_config_path), issues)
     worker_rows = _workers(source_tables.get("workers", ()), issues)
     worker_rows = _augment_workers_from_session_notes(worker_rows, source_tables.get("sessions", ()), issues)
     _warn_duplicate_names(worker_rows, "workers", issues)
     worker_lookup = _lookup(worker_rows, "worker_id", "name")
+    _apply_aliases(worker_lookup, alias_config.get("worker_aliases"), "workers", issues)
     _add_session_worker_aliases(worker_lookup, source_tables.get("sessions", ()), issues)
     service_user_rows = _service_users(source_tables.get("service_users", ()), issues)
+    service_user_rows = _add_local_service_users(service_user_rows, alias_config.get("service_users"), issues)
     _warn_duplicate_names(service_user_rows, "service_users", issues)
     service_user_lookup = _lookup(service_user_rows, "service_user_id", "name")
+    _apply_aliases(service_user_lookup, alias_config.get("service_user_aliases"), "service_users", issues)
 
     session_rows = _sessions(
         source_tables.get("sessions", ()),
@@ -255,6 +260,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("source_dir", help="Read-only folder containing source CSV exports.")
     parser.add_argument("output_dir", help="Derived output folder for standardized CSV v1 files.")
     parser.add_argument("--booking-workbook", help="Optional booking workbook with Bookings/Childs/Support Workers/Availability/Matching sheets.")
+    parser.add_argument("--alias-config", help="Optional local alias/config JSON file for tenant-specific name corrections.")
     parser.add_argument("--import-run-id", help="Stable import run ID to write into import_manifest.json.")
     parser.add_argument(
         "--validate",
@@ -268,6 +274,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.source_dir,
             args.output_dir,
             booking_workbook=args.booking_workbook,
+            alias_config_path=args.alias_config,
             import_run_id=args.import_run_id,
         )
     except WorkbookAdapterError as error:
@@ -334,6 +341,26 @@ def _read_source_tables(
     return tables
 
 
+def _alias_config_path(source_dir: Path, explicit_path: str | Path | None) -> Path:
+    if explicit_path:
+        return Path(explicit_path)
+    return source_dir.parent / "config" / "aliases.local.json"
+
+
+def _read_alias_config(path: Path, issues: list[AdapterIssue]) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        _add_issue(issues, "error", "invalid_alias_config", f"could not read alias config: {error}", str(path))
+        return {}
+    if not isinstance(value, dict):
+        _add_issue(issues, "error", "invalid_alias_config", "alias config must be a JSON object", str(path))
+        return {}
+    return value
+
+
 def _workers(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]) -> list[dict[str, str]]:
     output = []
     seen: set[str] = set()
@@ -382,6 +409,57 @@ def _workers(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]) -> l
             }
         )
     return output
+
+
+def _apply_aliases(
+    lookup: dict[str, str],
+    aliases_by_canonical: object,
+    source: str,
+    issues: list[AdapterIssue],
+) -> None:
+    if aliases_by_canonical is None:
+        return
+    if not isinstance(aliases_by_canonical, dict):
+        _add_issue(issues, "warning", "invalid_aliases", f"{source} aliases must be an object", source)
+        return
+    for canonical, aliases in aliases_by_canonical.items():
+        canonical_key = _norm_name(str(canonical))
+        target_id = lookup.get(canonical_key)
+        if not target_id:
+            _add_issue(
+                issues,
+                "warning",
+                "unknown_alias_target",
+                f"alias target is not in {source}: {canonical}",
+                source,
+                None,
+                "aliases",
+            )
+            continue
+        if isinstance(aliases, str):
+            alias_values = [aliases]
+        elif isinstance(aliases, list):
+            alias_values = [str(item) for item in aliases]
+        else:
+            _add_issue(issues, "warning", "invalid_aliases", f"aliases for {canonical} must be a string or list", source)
+            continue
+        for alias in alias_values:
+            alias_key = _norm_name(alias)
+            if not alias_key:
+                continue
+            existing = lookup.get(alias_key)
+            if existing and existing != target_id:
+                _add_issue(
+                    issues,
+                    "warning",
+                    "conflicting_alias",
+                    f"alias {alias} maps to more than one {source} record",
+                    source,
+                    None,
+                    "aliases",
+                )
+                continue
+            lookup[alias_key] = target_id
 
 
 def _augment_workers_from_session_notes(
@@ -529,6 +607,68 @@ def _service_users(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]
     return output
 
 
+def _add_local_service_users(
+    service_user_rows: list[dict[str, str]],
+    local_records: object,
+    issues: list[AdapterIssue],
+) -> list[dict[str, str]]:
+    if local_records is None:
+        return service_user_rows
+    if not isinstance(local_records, list):
+        _add_issue(issues, "warning", "invalid_local_service_users", "service_users local records must be a list", "service_users")
+        return service_user_rows
+    output = list(service_user_rows)
+    seen_ids = {row["service_user_id"] for row in output}
+    seen_names = {_norm_name(row["name"]) for row in output}
+    for index, record in enumerate(local_records, start=1):
+        if not isinstance(record, dict):
+            _add_issue(issues, "warning", "invalid_local_service_user", "local service-user record must be an object", "service_users", index)
+            continue
+        name = str(record.get("name") or "").strip()
+        if not name:
+            _add_issue(issues, "warning", "invalid_local_service_user", "local service-user record requires name", "service_users", index, "name")
+            continue
+        service_user_id = str(record.get("service_user_id") or _stable_id("su", name)).strip()
+        if service_user_id in seen_ids or _norm_name(name) in seen_names:
+            continue
+        seen_ids.add(service_user_id)
+        seen_names.add(_norm_name(name))
+        postcode = _postcode(str(record.get("postcode") or record.get("home_postcode") or ""))
+        required_count = str(record.get("required_worker_count") or ("2" if _truthy_2_to_1(str(record.get("support_level") or "")) else "1"))
+        output.append(
+            {
+                "service_user_id": service_user_id,
+                "name": name,
+                "home_label": "",
+                "home_postcode": postcode,
+                "home_latitude": "",
+                "home_longitude": "",
+                "home_area": _area(postcode),
+                "support_level": str(record.get("support_level") or "standard"),
+                "required_worker_count": required_count,
+                "requires_driver": _bool_text(str(record.get("requires_driver") or "")),
+                "required_skills": _pipe(str(record.get("required_skills") or "")),
+                "communication_needs": _pipe(str(record.get("communication_needs") or "")),
+                "interests": _pipe(str(record.get("interests") or "")),
+                "risk_tags": _pipe(str(record.get("risk_tags") or "")),
+                "preferred_worker_ids": _pipe(str(record.get("preferred_worker_ids") or "")),
+                "avoided_worker_ids": _pipe(str(record.get("avoided_worker_ids") or "")),
+                "profile_is_stale": _bool_text(str(record.get("profile_is_stale") or "")),
+                "source_ref": "local-alias-config",
+            }
+        )
+        _add_issue(
+            issues,
+            "warning",
+            "service_user_added_from_alias_config",
+            f"added local service-user record from alias config: {service_user_id}",
+            "service_users",
+            index,
+            "service_user_id",
+        )
+    return output
+
+
 def _sessions(
     rows: Iterable[Mapping[str, str]],
     worker_lookup: Mapping[str, str],
@@ -664,24 +804,36 @@ def _family_requests(
 ) -> list[dict[str, str]]:
     output = []
     for row_number, row in enumerate(rows, start=2):
-        service_user_id = _resolve_name(_value(row, "service_user_id", "child_id", "su_id", "child_name", "client_name", "service_user", "service_user_name", "child", "name"), service_user_lookup, issues, "family_requests", row_number, "service_user")
-        if not service_user_id:
+        service_user_ids = _resolve_service_user_references(
+            _value(row, "service_user_id", "child_id", "su_id", "child_name", "client_name", "service_user", "service_user_name", "child", "name"),
+            service_user_lookup,
+            issues,
+            "family_requests",
+            row_number,
+            "service_user",
+        )
+        if not service_user_ids:
             continue
         requested = _resolve_many(_value(row, "requested_worker_ids", "requested_staff", "preferred_worker", "staff", "support_worker", "worker", "sw_requested", "specific_sw"), worker_lookup, issues, "family_requests", row_number, "requested_worker_ids")
         avoided = _resolve_many(_value(row, "avoided_worker_ids", "avoided_staff", "avoid_staff", "avoid_worker"), worker_lookup, issues, "family_requests", row_number, "avoided_worker_ids")
-        output.append(
-            {
-                "family_request_id": _value(row, "family_request_id", "request_id") or _stable_id("request", f"{service_user_id}-{row_number}"),
-                "service_user_id": service_user_id,
-                "requested_worker_ids": "|".join(requested),
-                "avoided_worker_ids": "|".join(avoided),
-                "preferred_days": _preferred_request_days(row),
-                "preferred_time_ranges": "|".join(_family_request_time_ranges(row, issues, row_number)),
-                "unavailable_time_ranges": _pipe(_value(row, "unavailable_time_ranges")),
-                "notes": _value(row, "notes", "request", "sessions_notes", "notes_for_july"),
-                "source_ref": _source_ref("family_requests", row_number),
-            }
-        )
+        base_request_id = _value(row, "family_request_id", "request_id")
+        for index, service_user_id in enumerate(service_user_ids):
+            request_id = base_request_id or _stable_id("request", f"{service_user_id}-{row_number}")
+            if len(service_user_ids) > 1:
+                request_id = f"{request_id}-{index + 1}"
+            output.append(
+                {
+                    "family_request_id": request_id,
+                    "service_user_id": service_user_id,
+                    "requested_worker_ids": "|".join(requested),
+                    "avoided_worker_ids": "|".join(avoided),
+                    "preferred_days": _preferred_request_days(row),
+                    "preferred_time_ranges": "|".join(_family_request_time_ranges(row, issues, row_number)),
+                    "unavailable_time_ranges": _pipe(_value(row, "unavailable_time_ranges")),
+                    "notes": _value(row, "notes", "request", "sessions_notes", "notes_for_july"),
+                    "source_ref": _source_ref("family_requests", row_number),
+                }
+            )
     return output
 
 
@@ -1454,6 +1606,46 @@ def _resolve_first(
             field,
         )
     return ""
+
+
+def _resolve_service_user_references(
+    value: str,
+    lookup: Mapping[str, str],
+    issues: list[AdapterIssue],
+    source: str,
+    row_number: int,
+    field: str,
+) -> list[str]:
+    resolved = _resolve_name(value, lookup, [], source, row_number, field)
+    if resolved:
+        return [resolved]
+
+    parts = _split_service_user_reference(value)
+    if len(parts) <= 1:
+        _resolve_name(value, lookup, issues, source, row_number, field)
+        return []
+
+    resolved_parts = []
+    for part in parts:
+        part_id = _resolve_name(part, lookup, [], source, row_number, field)
+        if not part_id:
+            _resolve_name(value, lookup, issues, source, row_number, field)
+            return []
+        if part_id not in resolved_parts:
+            resolved_parts.append(part_id)
+    return resolved_parts
+
+
+def _split_service_user_reference(value: str) -> list[str]:
+    normalized = re.sub(r"\s+(?:and|&|\+)\s+", "|", value.strip(), flags=re.IGNORECASE)
+    pieces = [piece.strip(" ,;/") for piece in normalized.split("|") if piece.strip(" ,;/")]
+    if len(pieces) > 1:
+        return pieces
+
+    tokens = _norm_name(value).split()
+    if len(tokens) == 4 and len(tokens[1]) == 1 and len(tokens[3]) == 1:
+        return [f"{tokens[0]} {tokens[1]}", f"{tokens[2]} {tokens[3]}"]
+    return [value.strip()] if value.strip() else []
 
 
 def _resolve_many(
