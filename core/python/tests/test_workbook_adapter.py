@@ -301,6 +301,15 @@ class WorkbookAdapterTests(unittest.TestCase):
                                 "required_worker_count": 2,
                             }
                         ],
+                        "workers": [
+                            {
+                                "worker_id": "worker-local",
+                                "name": "Local Worker",
+                                "postcode": "ZZ8 8ZZ",
+                                "travel_modes": "bus",
+                                "has_car": False,
+                            }
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -319,7 +328,11 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertIn("su-trace", result.state.service_users)
             self.assertEqual("su-trace", result.state.sessions["booking-local"].service_user_id)
             self.assertEqual("ZZ9 9ZZ", result.state.service_users["su-trace"].home_location.postcode)
+            self.assertIn("worker-local", result.state.workers)
+            self.assertEqual("ZZ8 8ZZ", result.state.workers["worker-local"].home_location.postcode)
+            self.assertEqual(frozenset({"bus"}), result.state.workers["worker-local"].travel_modes)
             self.assertIn("service_user_added_from_alias_config", {issue.code for issue in report.warnings})
+            self.assertIn("worker_added_from_alias_config", {issue.code for issue in report.warnings})
 
     def test_combined_family_request_service_user_aliases_split_into_two_requests(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -558,11 +571,70 @@ class WorkbookAdapterTests(unittest.TestCase):
             shutil.copytree(FIXTURE_DIR, source_dir)
             report_dir = source_dir / "availability report"
             report_dir.mkdir()
-            (report_dir / "July 2026.pdf").write_bytes(b"%PDF-1.4\n% synthetic placeholder\n")
+            _write_text_pdf(report_dir / "July 2026.pdf", ["synthetic report without availability rows"])
 
             report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-pdf-warning")
 
             self.assertIn("availability_report_pdf_requires_review", {issue.code for issue in report.warnings})
+
+    def test_adapter_parses_availability_report_pdf_when_text_is_extractable(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "availability.csv").unlink()
+            (source_dir / "staff.csv").write_text(
+                "\n".join(
+                    [
+                        "staff_id,name,postcode,travel_modes,has_car,skills,willing_areas,current_hours,max_hours",
+                        "worker-lane,Lane Worker (P),AA1 1AA,drive,true,road_safety,AA1,0,20",
+                        "worker-moss,Moss Worker,AA2 2AA,bus,false,visual_support,AA2,0,20",
+                        "worker-sage,Sage (Scout) River,AA3 3AA,bus,false,visual_support,AA3,0,20",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report_dir = source_dir / "availability report"
+            report_dir.mkdir()
+            _write_text_pdf(
+                report_dir / "July 2026.pdf",
+                [
+                    "Availability reporting",
+                    "For the month: July 2026",
+                    "Fri, 10",
+                    "Jul 2026",
+                    "Lane Worker YES NO",
+                    "Fri, 10",
+                    "Jul 2026",
+                    "Moss Worker NO NO 09:00 13:00 14:00 16:00",
+                    "Fri, 10",
+                    "Jul 2026",
+                    "Sage River (Scout) NO NO 10:00 11:00",
+                    "Fri, 10",
+                    "Jul 2026",
+                    "Recruit Worker (R) YES NO",
+                ],
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-availability-pdf")
+            result = load_standardized_csv(output_dir)
+
+            self.assertIn("availability_report_pdf_parsed", {issue.code for issue in report.issues})
+            self.assertNotIn("availability_report_pdf_requires_review", {issue.code for issue in report.warnings})
+            lane_windows = result.state.workers["worker-lane"].availability
+            moss_windows = result.state.workers["worker-moss"].availability
+            self.assertEqual(1, len(lane_windows))
+            self.assertEqual("Lane Worker (P)", result.state.workers["worker-lane"].name)
+            self.assertEqual("2026-07-10T08:00:00+01:00", lane_windows[0].start.isoformat())
+            self.assertEqual("2026-07-10T23:00:00+01:00", lane_windows[0].end.isoformat())
+            self.assertEqual(2, len(moss_windows))
+            self.assertEqual(
+                ["2026-07-10T09:00:00+01:00", "2026-07-10T14:00:00+01:00"],
+                [window.start.isoformat() for window in moss_windows],
+            )
+            self.assertEqual(1, len(result.state.workers["worker-sage"].availability))
+            self.assertEqual(4, report.row_counts["availability"])
 
 
 def _file_hashes(folder: Path) -> dict[str, str]:
@@ -685,6 +757,35 @@ def _column_name(index: int) -> str:
         index, remainder = divmod(index - 1, 26)
         name = chr(ord("A") + remainder) + name
     return name
+
+
+def _write_text_pdf(path: Path, lines: list[str]) -> None:
+    content = ["BT", "/F1 12 Tf", "50 750 Td"]
+    for index, line in enumerate(lines):
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        if index:
+            content.append("0 -14 Td")
+        content.append(f"({escaped}) Tj")
+    content.append("ET")
+    stream = "\n".join(content).encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for object_number, value in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output += f"{object_number} 0 obj\n".encode("ascii") + value + b"\nendobj\n"
+    xref = len(output)
+    output += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode("ascii")
+    for offset in offsets:
+        output += f"{offset:010d} 00000 n \n".encode("ascii")
+    output += f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode("ascii")
+    path.write_bytes(output)
 
 
 if __name__ == "__main__":

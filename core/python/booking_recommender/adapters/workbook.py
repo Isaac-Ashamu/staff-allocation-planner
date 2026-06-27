@@ -130,6 +130,8 @@ SOURCE_FILES = {
 }
 
 REQUEST_FILE_EXTENSIONS = {".eml", ".docx", ".txt", ".msg"}
+AVAILABILITY_REPORT_ALL_DAY_START = "08:00:00"
+AVAILABILITY_REPORT_ALL_DAY_END = "23:00:00"
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,7 @@ def convert_workbook_sources(
     source_tables = _read_source_tables(source_path, workbook_path, issues)
     alias_config = _read_alias_config(_alias_config_path(source_path, alias_config_path), issues)
     worker_rows = _workers(source_tables.get("workers", ()), issues)
+    worker_rows = _add_local_workers(worker_rows, alias_config.get("workers"), issues)
     worker_rows = _augment_workers_from_session_notes(worker_rows, source_tables.get("sessions", ()), issues)
     _warn_duplicate_names(worker_rows, "workers", issues)
     worker_lookup = _lookup(worker_rows, "worker_id", "name")
@@ -319,7 +322,9 @@ def _read_source_tables(
     request_rows = _read_request_files(source_dir, issues)
     if request_rows:
         tables["family_requests"] = tuple(tables.get("family_requests", ())) + tuple(request_rows)
-    _warn_availability_report_pdfs(source_dir, issues)
+    availability_report_rows = _read_availability_report_pdfs(source_dir, issues)
+    if availability_report_rows:
+        tables["availability"] = tuple(tables.get("availability", ())) + tuple(availability_report_rows)
 
     for required_key in ("workers", "service_users", "sessions"):
         if not tables.get(required_key):
@@ -460,6 +465,68 @@ def _apply_aliases(
                 )
                 continue
             lookup[alias_key] = target_id
+
+
+def _add_local_workers(
+    worker_rows: list[dict[str, str]],
+    local_records: object,
+    issues: list[AdapterIssue],
+) -> list[dict[str, str]]:
+    if local_records is None:
+        return worker_rows
+    if not isinstance(local_records, list):
+        _add_issue(issues, "warning", "invalid_local_workers", "workers local records must be a list", "workers")
+        return worker_rows
+    output = list(worker_rows)
+    seen_ids = {row["worker_id"] for row in output}
+    seen_names = {_norm_name(row["name"]) for row in output}
+    for index, record in enumerate(local_records, start=1):
+        if not isinstance(record, dict):
+            _add_issue(issues, "warning", "invalid_local_worker", "local worker record must be an object", "workers", index)
+            continue
+        name = str(record.get("name") or "").strip()
+        if not name:
+            _add_issue(issues, "warning", "invalid_local_worker", "local worker record requires name", "workers", index, "name")
+            continue
+        worker_id = str(record.get("worker_id") or _stable_id("worker", name)).strip()
+        if worker_id in seen_ids or _norm_name(name) in seen_names:
+            continue
+        seen_ids.add(worker_id)
+        seen_names.add(_norm_name(name))
+        postcode = _postcode(str(record.get("postcode") or record.get("home_postcode") or ""))
+        modes = _modes(str(record.get("travel_modes") or record.get("transport") or ""))
+        has_car = "true" if "drive" in modes or _truthy(str(record.get("has_car") or "")) else "false"
+        output.append(
+            {
+                "worker_id": worker_id,
+                "name": name,
+                "home_label": "",
+                "home_postcode": postcode,
+                "home_latitude": "",
+                "home_longitude": "",
+                "home_area": _area(postcode),
+                "travel_modes": "|".join(sorted(modes or {"public_transport", "walk"})),
+                "has_car": has_car,
+                "skills": _pipe(str(record.get("skills") or "")),
+                "languages": _pipe(str(record.get("languages") or "")),
+                "willing_areas": _pipe(str(record.get("willing_areas") or "")),
+                "current_hours": str(record.get("current_hours") or "0"),
+                "max_hours": str(record.get("max_hours") or ""),
+                "preference_tags": _pipe(str(record.get("preference_tags") or "")),
+                "reliability_score": "",
+                "source_ref": "local-alias-config",
+            }
+        )
+        _add_issue(
+            issues,
+            "warning",
+            "worker_added_from_alias_config",
+            f"added local worker record from alias config: {worker_id}",
+            "workers",
+            index,
+            "worker_id",
+        )
+    return output
 
 
 def _augment_workers_from_session_notes(
@@ -754,7 +821,7 @@ def _availability(
             "worker",
             "name",
         )
-        worker_id = _resolve_name(worker_name, worker_lookup, issues, "availability", row_number, "worker")
+        worker_id = _resolve_reference_text(worker_name, worker_lookup, issues, "availability", row_number, "worker")
         start = _datetime_text(row, "start", "available_from")
         end = _datetime_text(row, "end", "available_to")
         if not worker_id or not start or not end:
@@ -766,7 +833,7 @@ def _availability(
                 "worker_id": worker_id,
                 "start": start,
                 "end": end,
-                "source_ref": _source_ref("availability", row_number),
+                "source_ref": _value(row, "source_ref") or _source_ref("availability", row_number),
             }
         )
     return output
@@ -1155,17 +1222,200 @@ def _request_file_row(path: Path, issues: list[AdapterIssue]) -> dict[str, str]:
     }
 
 
-def _warn_availability_report_pdfs(source_dir: Path, issues: list[AdapterIssue]) -> None:
+def _read_availability_report_pdfs(source_dir: Path, issues: list[AdapterIssue]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
     for path in sorted(source_dir.rglob("*.pdf")):
         if "availability" not in _norm_name(str(path)):
             continue
+        text = _pdf_text(path, issues)
+        if not text:
+            _add_issue(
+                issues,
+                "warning",
+                "availability_report_pdf_requires_review",
+                "availability report PDF discovered but could not be read; export it to availability.csv or an availability workbook before standardized import",
+                str(path),
+            )
+            continue
+        parsed_rows = _availability_report_rows_from_text(text, path, issues)
+        if not parsed_rows:
+            _add_issue(
+                issues,
+                "warning",
+                "availability_report_pdf_requires_review",
+                "availability report PDF discovered but no availability rows were parsed; export it to availability.csv or an availability workbook before standardized import",
+                str(path),
+            )
+            continue
+        rows.extend(parsed_rows)
+        _add_issue(
+            issues,
+            "info",
+            "availability_report_pdf_parsed",
+            f"availability report PDF parsed into {len(parsed_rows)} availability windows",
+            str(path),
+        )
+    return rows
+
+
+def _pdf_text(path: Path, issues: list[AdapterIssue]) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError:
         _add_issue(
             issues,
             "warning",
-            "availability_report_pdf_requires_review",
-            "availability report PDF discovered; export it to availability.csv or an availability workbook before standardized import",
+            "availability_pdf_parser_unavailable",
+            "pypdf is not installed, so availability report PDFs cannot be parsed automatically",
             str(path),
         )
+        return ""
+    try:
+        reader = PdfReader(str(path))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception as error:  # pragma: no cover - pypdf can raise several parser-specific errors.
+        _add_issue(issues, "warning", "unreadable_availability_pdf", f"could not read availability report PDF: {error}", str(path))
+        return ""
+
+
+def _availability_report_rows_from_text(
+    text: str,
+    path: Path,
+    issues: list[AdapterIssue],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    row_number = 0
+    index = 0
+    while index < len(lines) - 2:
+        date_match = re.fullmatch(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*(\d{1,2})", lines[index])
+        month_match = re.fullmatch(
+            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})",
+            lines[index + 1],
+        )
+        if not date_match or not month_match:
+            index += 1
+            continue
+
+        day_text = f"{int(date_match.group(1)):02d} {month_match.group(1)} {month_match.group(2)}"
+        day = datetime.strptime(day_text, "%d %b %Y").date()
+        index += 2
+        fragments: list[str] = []
+        while index < len(lines):
+            if (
+                re.fullmatch(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*\d{1,2}", lines[index])
+                and index + 1 < len(lines)
+                and re.fullmatch(r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}", lines[index + 1])
+            ):
+                break
+            fragments.append(lines[index])
+            if len(_availability_report_flags(" ".join(fragments))) >= 2:
+                break
+            index += 1
+
+        row_number += 1
+        rows.extend(_availability_windows_from_report_row(day, " ".join(fragments), path, row_number, issues))
+    return rows
+
+
+def _availability_windows_from_report_row(
+    day: date,
+    row_text: str,
+    path: Path,
+    row_number: int,
+    issues: list[AdapterIssue],
+) -> list[dict[str, str]]:
+    normalized = _space_availability_report_flags(row_text)
+    match = re.match(r"(?P<name>.+?)\s+(?P<all_day>YES|NO)\s+(?P<unavailable_all_day>YES|NO)\s*(?P<rest>.*)$", normalized)
+    if not match:
+        _add_issue(
+            issues,
+            "warning",
+            "unparsed_availability_report_row",
+            "availability report row could not be parsed and was skipped",
+            str(path),
+            row_number,
+        )
+        return []
+
+    worker_name = _clean_availability_report_name(match.group("name"))
+    if not worker_name:
+        return []
+    if _is_recruitment_pipeline_name(worker_name):
+        return []
+    if match.group("all_day") == "YES":
+        pairs = [(AVAILABILITY_REPORT_ALL_DAY_START, AVAILABILITY_REPORT_ALL_DAY_END)]
+    else:
+        times = re.findall(r"\b\d{1,2}:\d{2}\b", match.group("rest"))
+        if len(times) % 2:
+            _add_issue(
+                issues,
+                "warning",
+                "unpaired_availability_report_time",
+                "availability report row has an odd number of time values; trailing time was ignored",
+                str(path),
+                row_number,
+            )
+        pairs = [(_coerce_report_time(times[index]), _coerce_report_time(times[index + 1])) for index in range(0, len(times) - 1, 2)]
+
+    output = []
+    for window_index, (start_time, end_time) in enumerate(pairs, start=1):
+        if start_time >= end_time:
+            _add_issue(
+                issues,
+                "warning",
+                "invalid_availability_report_window",
+                "availability report row has an end time that is not after the start time; window was skipped",
+                str(path),
+                row_number,
+            )
+            continue
+        start = f"{day.isoformat()}T{start_time}+01:00"
+        end = f"{day.isoformat()}T{end_time}+01:00"
+        output.append(
+            {
+                "availability_id": _availability_report_id(path, row_number, worker_name, start, end, window_index),
+                "staff_name": worker_name,
+                "start": start,
+                "end": end,
+                "source_ref": f"{path}:availability-report-row-{row_number}",
+            }
+        )
+    return output
+
+
+def _availability_report_flags(value: str) -> list[str]:
+    return re.findall(r"(?<![A-Z])(YES|NO)(?![A-Z])", value)
+
+
+def _space_availability_report_flags(value: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"(?<![A-Z])(YES|NO)(?![A-Z])", r" \1 ", value)).strip()
+
+
+def _clean_availability_report_name(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("_", " ")).strip(" -")
+
+
+def _is_recruitment_pipeline_name(value: str) -> bool:
+    return re.search(r"\(\s*R\s*\)", value, flags=re.IGNORECASE) is not None
+
+
+def _coerce_report_time(value: str) -> str:
+    hour, minute = value.split(":", 1)
+    return f"{int(hour):02d}:{int(minute):02d}:00"
+
+
+def _availability_report_id(
+    path: Path,
+    row_number: int,
+    worker_name: str,
+    start: str,
+    end: str,
+    window_index: int,
+) -> str:
+    key = f"{path}:{row_number}:{worker_name}:{start}:{end}:{window_index}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+    return f"availability-report-{digest}"
 
 
 def _request_text(path: Path, issues: list[AdapterIssue]) -> str:
@@ -1530,14 +1780,23 @@ def _lookup(rows: Iterable[Mapping[str, str]], id_field: str, name_field: str) -
     name_counts: dict[str, int] = {}
     cached_rows = tuple(rows)
     for row in cached_rows:
-        name_counts[_norm_name(row[name_field])] = name_counts.get(_norm_name(row[name_field]), 0) + 1
+        for name_key in _name_lookup_keys(row[name_field]):
+            name_counts[name_key] = name_counts.get(name_key, 0) + 1
     for row in cached_rows:
         row_id = row[id_field]
         lookup[_norm_name(row_id)] = row_id
-        name_key = _norm_name(row[name_field])
-        if name_counts[name_key] == 1:
-            lookup[name_key] = row_id
+        for name_key in _name_lookup_keys(row[name_field]):
+            if name_counts[name_key] == 1:
+                lookup[name_key] = row_id
     return lookup
+
+
+def _name_lookup_keys(value: str) -> tuple[str, ...]:
+    keys = [_norm_name(value)]
+    without_parentheses = re.sub(r"\([^)]*\)", " ", value)
+    keys.append(_norm_name(without_parentheses))
+    keys.append(_norm_name(re.sub(r"\((?:P|NR|DRIVER)\)", " ", value, flags=re.IGNORECASE)))
+    return tuple(dict.fromkeys(key for key in keys if key))
 
 
 def _warn_duplicate_names(rows: Iterable[Mapping[str, str]], source: str, issues: list[AdapterIssue]) -> None:
@@ -1968,6 +2227,8 @@ def _source_refs(source_dir: Path, booking_workbook: str | Path | None) -> set[s
         refs.update(str(path) for path in sorted(source_dir.glob("*.xlsx")))
     for path in sorted(source_dir.rglob("*")):
         if path.is_file() and path.suffix.lower() in REQUEST_FILE_EXTENSIONS:
+            refs.add(str(path))
+        if path.is_file() and path.suffix.lower() == ".pdf" and "availability" in _norm_name(str(path)):
             refs.add(str(path))
     return refs
 

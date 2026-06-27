@@ -361,8 +361,15 @@ Implemented:
 - Discovers `.msg` date-request files and emits manual-review warnings rather
   than silently dropping or pretending to parse unsupported Outlook binary
   content.
-- Discovers availability-report PDFs and emits manual-export/review warnings
-  rather than silently treating them as imported availability.
+- Parses text-extractable availability-report PDFs into standardized
+  availability windows using `pypdf`; all-day rows become `08:00-23:00`
+  bookable windows and explicit free-from/to pairs become separate availability
+  windows.
+- Excludes availability-report staff rows marked `(R)` because those workers
+  were still in the recruitment pipeline when the source data was collected.
+- Keeps availability-report PDF fallback warnings when the PDF cannot be read,
+  no deterministic rows are found, or extracted worker names cannot be resolved
+  against the staff source of truth.
 - Emits structured adapter warnings/errors for missing sources, missing workbook
   sheets, unresolved names, duplicate IDs, and incomplete rows.
 - Writes `adapter_report.json` and `import_manifest.json` with source refs.
@@ -383,8 +390,9 @@ Operational follow-up:
 - Binary Outlook `.msg` content still requires manual export to `.eml`, `.docx`,
   `.txt`, or a reviewed structured CSV until a dedicated parser dependency is
   approved.
-- Availability-report PDFs still require manual export to `availability.csv` or
-  an availability workbook until a dedicated, reviewed PDF parser is added.
+- Availability-report PDF parsing is now supported for the observed
+  text-extractable availability reports. Rows whose extracted names do not resolve
+  against staff records still require alias/staff-source review.
 
 Initial adapter targets:
 
