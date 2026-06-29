@@ -423,7 +423,7 @@ Acceptance criteria:
 
 ## Phase 7: Add Persistence And Audit
 
-Status: Pending.
+Status: Done.
 
 Goal: make recommendations reproducible and reviewable.
 
@@ -434,6 +434,39 @@ Recommended stack:
 - SQLAlchemy or SQLModel.
 - Background worker for imports and travel jobs.
 - Object storage for original uploads in production.
+
+Implemented:
+
+- Added local relational persistence in `booking_recommender.persistence` using
+  SQLite for development and tests, with a schema that maps to the planned
+  Postgres backend.
+- Added schema bootstrap/migration tracking through `schema_migrations`.
+- Persists tenants, import runs, source file metadata, immutable planning
+  snapshots, normalized records, recommendations, recommendation components,
+  human decisions, override-reason catalogue rows, and outcome feedback rows.
+- Persists allocation CLI runs with `--audit-db`, linking recommendations to
+  import run, planning snapshot, session, worker, and service user.
+- Adds query helpers for recommendations by session, worker, service user, and
+  import run.
+- Stores human decisions separately from generated recommendations.
+- Requires override reasons when a non-top candidate is accepted or an override
+  decision is recorded.
+- Adds `recommender-db init` and `recommender-db seed-dev` commands for local
+  database setup with synthetic development tenant data only.
+- Adds tests for schema initialization, fixture allocation persistence,
+  idempotent immutable snapshots, query paths, CLI audit persistence, and
+  override-reason enforcement.
+
+Production follow-up:
+
+- Replace or back the SQLite implementation with managed Postgres migrations
+  when the FastAPI backend is introduced.
+- Store original uploads in object storage and persist object metadata instead
+  of local source paths.
+- Add API authentication/authorization and tenant isolation around persistence
+  access.
+- Add review UI flows that write `human_decisions` and later
+  `outcome_feedback`.
 
 Core records:
 
@@ -451,20 +484,22 @@ Core records:
 
 Tasks:
 
-- Design database schema.
-- Store import audit metadata.
-- Store immutable planning snapshots.
-- Store recommendation inputs and outputs.
-- Store accept/reject/override decisions.
-- Add migration tooling.
-- Add seed data for development.
+- Design database schema. Done.
+- Store import audit metadata. Done.
+- Store immutable planning snapshots. Done.
+- Store recommendation inputs and outputs. Done.
+- Store accept/reject/override decisions. Done.
+- Add migration tooling. Done for local SQLite schema bootstrap; production
+  migration tooling remains a backend follow-up.
+- Add seed data for development. Done for synthetic development tenant setup.
 
 Acceptance criteria:
 
 - A recommendation can be traced back to its import run and planning snapshot.
-- Human decisions are stored separately from generated recommendations.
-- Override reasons are required when a non-top candidate is selected.
-- Data can be queried by session, worker, service user, and import run.
+  Done.
+- Human decisions are stored separately from generated recommendations. Done.
+- Override reasons are required when a non-top candidate is selected. Done.
+- Data can be queried by session, worker, service user, and import run. Done.
 
 ## Phase 8: Build The Review UI
 

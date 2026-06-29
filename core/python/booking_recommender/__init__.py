@@ -43,6 +43,18 @@ from .importer import (
     StandardizedImportResult,
     load_standardized_csv,
 )
+from .persistence import (
+    PersistedAllocationRun,
+    PersistenceError,
+    initialize_database,
+    persist_allocation_report,
+    recommendations_for_import_run,
+    recommendations_for_service_user,
+    recommendations_for_session,
+    recommendations_for_worker,
+    record_human_decision,
+    seed_development_data,
+)
 
 __all__ = [
     "Allocation",
@@ -60,6 +72,8 @@ __all__ = [
     "ImportReport",
     "Location",
     "PairHistory",
+    "PersistedAllocationRun",
+    "PersistenceError",
     "PlannedAssignment",
     "PlanningState",
     "Recommendation",
@@ -80,8 +94,16 @@ __all__ = [
     "apply_exogenous_event",
     "build_allocation_report",
     "greedy_allocate_open_sessions",
+    "initialize_database",
     "load_standardized_csv",
+    "persist_allocation_report",
     "rank_session_candidates",
+    "recommendations_for_import_run",
+    "recommendations_for_service_user",
+    "recommendations_for_session",
+    "recommendations_for_worker",
+    "record_human_decision",
     "render_allocation_report",
     "score_assign_action",
+    "seed_development_data",
 ]

@@ -13,6 +13,7 @@ from .allocation_report import (
     render_allocation_report,
 )
 from .importer import StandardizedImportError, load_standardized_csv
+from .persistence import persist_allocation_report
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -34,6 +35,14 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--compare-single-session",
         action="store_true",
         help="Include one-session rankings for comparison with the full greedy allocation plan.",
+    )
+    parser.add_argument(
+        "--audit-db",
+        help="Optional SQLite audit database path for persisted snapshots, recommendations, and decisions.",
+    )
+    parser.add_argument(
+        "--tenant-id",
+        help="Optional tenant ID override for audit persistence. Defaults to tenant rules from the import.",
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -61,6 +70,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     print(f"Saved derived outputs to {output_dir}")
     for path in written:
         print(f"- {path.name}")
+    if args.audit_db:
+        persisted = persist_allocation_report(args.audit_db, report, tenant_id=args.tenant_id)
+        print(f"Saved audit records to {args.audit_db}")
+        print(f"- planning_snapshot_id: {persisted.planning_snapshot_id}")
+        print(f"- recommendations: {len(persisted.recommendation_ids)}")
     return 0
 
 

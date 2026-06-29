@@ -18,3 +18,4 @@ include = ["booking_recommender*"]
 import-standardized-csv = "booking_recommender.import_cli:main"
 allocate-sessions = "booking_recommender.allocation_cli:main"
 workbook-adapter = "booking_recommender.adapters.workbook:main"
+recommender-db = "booking_recommender.persistence_cli:main"
