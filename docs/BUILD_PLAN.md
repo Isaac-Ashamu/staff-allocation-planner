@@ -503,10 +503,42 @@ Acceptance criteria:
 
 ## Phase 8: Build The Review UI
 
-Status: Pending.
+Status: Done.
 
 Goal: support bookings staff in reviewing and approving a proposed allocation
 plan.
+
+Implemented:
+
+- Added dependency-light local review UI in `booking_recommender.review_ui`.
+- Added `review-ui` / `python -m booking_recommender.review_ui` command.
+- Loads standardized CSV v1 input, generates the proposed allocation plan, and
+  persists recommendations to the existing SQLite audit database.
+- Shows a compact operational dashboard with whole-plan counts for allocated,
+  partially allocated, unfilled, warning, and approved sessions.
+- Shows queues and filters for date, service user, worker, status/review state,
+  priority, and page size.
+- Shows session detail with assigned workers, remaining coverage, driver
+  requirement, location, stale-profile/missing-travel/import warnings, ranked
+  candidates, alternatives, hard failures, candidate warnings, score component
+  breakdown, and fallback travel estimate details.
+- Shows a worker day/route view built from proposed and existing allocations.
+- Records accept, reject, and override decisions through the persistence audit
+  layer; reject and override decisions require a reason, while non-top accepts
+  continue to require override reasons through persistence.
+- Derives review states for draft, accepted, rejected, needs information, and
+  reviewed sessions.
+- Paginates the session queue so real planning runs can be reviewed without
+  rendering every session on the first page.
+- Added focused review UI tests for dashboard counts, filters, rendered review
+  evidence, and decision audit writes.
+
+Production follow-up:
+
+- Replace the local stdlib server with the planned authenticated multi-tenant
+  backend/UI when the SaaS API layer is introduced.
+- Add authenticated users, tenant isolation, object-storage upload flow,
+  richer decision-state transitions, and concurrent reviewer handling.
 
 Core views:
 
