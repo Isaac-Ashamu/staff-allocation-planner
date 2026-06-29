@@ -339,6 +339,7 @@ def worker_to_dict(worker: Worker) -> dict:
     return {
         "id": worker.id,
         "name": worker.name,
+        "gender": worker.gender,
         "home_location": location_to_dict(worker.home_location),
         "travel_modes": sorted(mode.value for mode in worker.travel_modes),
         "has_car": worker.has_car,
@@ -360,6 +361,7 @@ def service_user_to_dict(service_user: ServiceUser) -> dict:
     return {
         "id": service_user.id,
         "name": service_user.name,
+        "gender": service_user.gender,
         "home_location": location_to_dict(service_user.home_location),
         "support_level": service_user.support_level,
         "required_worker_count": service_user.required_worker_count,

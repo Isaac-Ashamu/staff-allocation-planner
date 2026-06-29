@@ -96,6 +96,15 @@ Lists:
 - Values are case-sensitive and should be lower snake case unless they are IDs.
 - Values inside a list must be unique after trimming whitespace.
 
+Gender:
+
+- `gender` fields use normalized optional values: `female`, `male`,
+  `non_binary`, `other`, `prefer_not_to_say`, or `unknown`.
+- Gender is sensitive matching context. Importing it does not by itself create a
+  hard or soft scoring rule; gender-based constraints or preferences must be
+  represented explicitly in future policy/request fields and surfaced for human
+  review.
+
 Booleans and numbers:
 
 - Booleans are `true` or `false`.
@@ -154,6 +163,7 @@ File: `workers.csv`
 | --- | --- | --- | --- |
 | `worker_id` | string | required | Maps to `Worker.id`. |
 | `name` | string | required | Display only; not identity. |
+| `gender` | enum | optional | Allowed: `female`, `male`, `non_binary`, `other`, `prefer_not_to_say`, `unknown`. Imported for review/context, not used for scoring by itself. |
 | `home_label` | string | optional | Maps to `Location.label`; use an empty string if postcode/coordinates identify the location. |
 | `home_postcode` | string | optional | Synthetic fixtures must not use real home postcodes. |
 | `home_latitude` | decimal | optional | Must be paired with longitude when present. |
@@ -178,6 +188,7 @@ File: `service_users.csv`
 | --- | --- | --- | --- |
 | `service_user_id` | string | required | Maps to `ServiceUser.id`. |
 | `name` | string | required | Display only; not identity. |
+| `gender` | enum | optional | Allowed: `female`, `male`, `non_binary`, `other`, `prefer_not_to_say`, `unknown`. Imported for review/context, not used for scoring by itself. |
 | `home_label` | string | optional | Maps to `Location.label`. |
 | `home_postcode` | string | optional | Synthetic fixtures must not use real home postcodes. |
 | `home_latitude` | decimal | optional | Must be paired with longitude when present. |

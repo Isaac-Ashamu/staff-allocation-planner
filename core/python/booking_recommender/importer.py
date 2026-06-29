@@ -53,6 +53,7 @@ SESSION_STATUSES = {
     "rejected",
 }
 COMPATIBILITY_STATUSES = {"appropriate", "inappropriate", "unknown"}
+GENDER_VALUES = {"female", "male", "non_binary", "other", "prefer_not_to_say", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -250,6 +251,7 @@ def _parse_workers(rows, import_run_id: str, issues: list[ImportIssue]) -> dict[
             name=name,
             home_location=_location(row, "home", "workers", issues),
             travel_modes=frozenset(travel_modes),
+            gender=_optional_gender(row, "gender", "workers", issues),
             has_car=bool(has_car),
             skills=frozenset(_list(row.get("skills", ""))),
             languages=frozenset(_list(row.get("languages", ""))),
@@ -286,6 +288,7 @@ def _parse_service_users(rows, import_run_id: str, workers: Mapping[str, Worker]
             name=_required(row, "name", "service_users", issues),
             home_location=_location(row, "home", "service_users", issues),
             support_level=_required(row, "support_level", "service_users", issues),
+            gender=_optional_gender(row, "gender", "service_users", issues),
             required_worker_count=_positive_int(row, "required_worker_count", "service_users", issues, minimum=1) or 1,
             requires_driver=bool(_bool(row, "requires_driver", "service_users", issues)),
             required_skills=frozenset(_list(row.get("required_skills", ""))),
@@ -560,6 +563,40 @@ def _travel_modes(row, field: str, table: str, issues: list[ImportIssue]) -> tup
 def _list(value: str) -> tuple[str, ...]:
     items = tuple(item.strip() for item in value.split("|") if item.strip())
     return items
+
+
+def _optional_gender(row, field: str, table: str, issues: list[ImportIssue]) -> str | None:
+    value = row.get(field, "").strip()
+    if not value:
+        return None
+    normalized = value.lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "f": "female",
+        "woman": "female",
+        "girl": "female",
+        "m": "male",
+        "man": "male",
+        "boy": "male",
+        "nonbinary": "non_binary",
+        "non_binary": "non_binary",
+        "non_b": "non_binary",
+        "prefer_not_to_say": "prefer_not_to_say",
+        "not_disclosed": "prefer_not_to_say",
+        "not_specified": "unknown",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized not in GENDER_VALUES:
+        _add_row_issue(
+            issues,
+            "error",
+            "invalid_gender",
+            f"{field} must be one of {', '.join(sorted(GENDER_VALUES))}",
+            table,
+            row,
+            field,
+        )
+        return None
+    return normalized
 
 
 def _optional_text(value) -> str | None:

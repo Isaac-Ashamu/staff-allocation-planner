@@ -31,6 +31,7 @@ class StandardizedImporterTests(unittest.TestCase):
         })
 
         alpha = state.workers["worker-alpha"]
+        self.assertEqual("female", alpha.gender)
         self.assertIn(TravelMode.DRIVE, alpha.travel_modes)
         self.assertEqual(1, len(alpha.availability))
         self.assertEqual(1, len(alpha.unavailability))
@@ -40,6 +41,7 @@ class StandardizedImporterTests(unittest.TestCase):
         self.assertEqual(("session-200",), bravo.current_allocations)
         session = state.sessions["session-200"]
         self.assertEqual("su-river", session.service_user_id)
+        self.assertEqual("male", state.service_users["su-river"].gender)
         self.assertEqual(("lead",), tuple(allocation.role for allocation in session.assigned))
         self.assertEqual(20, session.travel_buffer_before_minutes)
 
@@ -90,6 +92,12 @@ class StandardizedImporterTests(unittest.TestCase):
                 if row["worker_id"] == "worker-alpha"
                 else None,
             )
+            _update_csv(
+                import_dir / "workers.csv",
+                lambda row: row.update({"gender": "surprise"})
+                if row["worker_id"] == "worker-alpha"
+                else None,
+            )
 
             with self.assertRaises(StandardizedImportError) as context:
                 load_standardized_csv(import_dir)
@@ -97,6 +105,7 @@ class StandardizedImporterTests(unittest.TestCase):
         codes = {issue.code for issue in context.exception.report.errors}
         self.assertIn("unknown_assigned_worker_id", codes)
         self.assertIn("invalid_compatibility_status", codes)
+        self.assertIn("invalid_gender", codes)
 
     def test_cli_prints_deterministic_summary(self):
         completed = subprocess.run(

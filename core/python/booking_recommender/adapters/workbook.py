@@ -29,6 +29,7 @@ STANDARD_TABLE_HEADERS = {
     "workers.csv": [
         "worker_id",
         "name",
+        "gender",
         "home_label",
         "home_postcode",
         "home_latitude",
@@ -48,6 +49,7 @@ STANDARD_TABLE_HEADERS = {
     "service_users.csv": [
         "service_user_id",
         "name",
+        "gender",
         "home_label",
         "home_postcode",
         "home_latitude",
@@ -396,6 +398,7 @@ def _workers(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]) -> l
             {
                 "worker_id": worker_id,
                 "name": name,
+                "gender": _gender_text(_value(row, "gender", "sex")),
                 "home_label": "",
                 "home_postcode": postcode,
                 "home_latitude": "",
@@ -500,6 +503,7 @@ def _add_local_workers(
             {
                 "worker_id": worker_id,
                 "name": name,
+                "gender": _gender_text(str(record.get("gender") or record.get("sex") or "")),
                 "home_label": "",
                 "home_postcode": postcode,
                 "home_latitude": "",
@@ -563,6 +567,7 @@ def _augment_workers_from_session_notes(
                 {
                     "worker_id": worker_id,
                     "name": note,
+                    "gender": "",
                     "home_label": "",
                     "home_postcode": "",
                     "home_latitude": "",
@@ -653,6 +658,7 @@ def _service_users(rows: Iterable[Mapping[str, str]], issues: list[AdapterIssue]
             {
                 "service_user_id": service_user_id,
                 "name": name,
+                "gender": _gender_text(_value(row, "gender", "sex")),
                 "home_label": "",
                 "home_postcode": _postcode(_value(row, "postcode", "home_postcode", "child_postcode", "su_postcode", "service_user_postcode", "address")),
                 "home_latitude": "",
@@ -706,6 +712,7 @@ def _add_local_service_users(
             {
                 "service_user_id": service_user_id,
                 "name": name,
+                "gender": _gender_text(str(record.get("gender") or record.get("sex") or "")),
                 "home_label": "",
                 "home_postcode": postcode,
                 "home_latitude": "",
@@ -2169,6 +2176,25 @@ def _truthy_2_to_1(value: str) -> bool:
 
 def _bool_text(value: str) -> str:
     return "true" if _truthy(value) else "false"
+
+
+def _gender_text(value: str) -> str:
+    text = _norm_name(value).replace(" ", "_")
+    aliases = {
+        "f": "female",
+        "woman": "female",
+        "girl": "female",
+        "m": "male",
+        "man": "male",
+        "boy": "male",
+        "nonbinary": "non_binary",
+        "non_binary": "non_binary",
+        "prefer_not_to_say": "prefer_not_to_say",
+        "not_disclosed": "prefer_not_to_say",
+        "not_specified": "unknown",
+    }
+    normalized = aliases.get(text, text)
+    return normalized if normalized in {"female", "male", "non_binary", "other", "prefer_not_to_say", "unknown"} else ""
 
 
 def _postcode(value: str) -> str:

@@ -87,6 +87,7 @@ class Worker:
     name: str
     home_location: Location
     travel_modes: frozenset[TravelMode]
+    gender: str | None = None
     has_car: bool = False
     skills: frozenset[str] = frozenset()
     languages: frozenset[str] = frozenset()
@@ -107,6 +108,7 @@ class ServiceUser:
     name: str
     home_location: Location
     support_level: str
+    gender: str | None = None
     required_worker_count: int = 1
     requires_driver: bool = False
     required_skills: frozenset[str] = frozenset()

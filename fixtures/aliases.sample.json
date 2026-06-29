@@ -24,7 +24,8 @@
       "name": "Synthetic Local Service User",
       "postcode": "ZZ1 1ZZ",
       "support_level": "2:1",
-      "required_worker_count": 2
+      "required_worker_count": 2,
+      "gender": "female"
     }
   ],
   "workers": [
@@ -33,7 +34,8 @@
       "name": "Synthetic Local Worker",
       "postcode": "ZZ2 2ZZ",
       "travel_modes": "bus",
-      "has_car": false
+      "has_car": false,
+      "gender": "male"
     }
   ]
 }

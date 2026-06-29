@@ -13,6 +13,7 @@ EXPECTED_HEADERS = {
     "workers.csv": [
         "worker_id",
         "name",
+        "gender",
         "home_label",
         "home_postcode",
         "home_latitude",
@@ -32,6 +33,7 @@ EXPECTED_HEADERS = {
     "service_users.csv": [
         "service_user_id",
         "name",
+        "gender",
         "home_label",
         "home_postcode",
         "home_latitude",
@@ -121,6 +123,7 @@ SESSION_STATUSES = {
     "cancelled",
     "rejected",
 }
+GENDER_VALUES = {"", "female", "male", "non_binary", "other", "prefer_not_to_say", "unknown"}
 
 
 class StandardizedCsvV1FixtureTests(unittest.TestCase):
@@ -148,6 +151,7 @@ class StandardizedCsvV1FixtureTests(unittest.TestCase):
         for row in workers:
             self.assertTrue(row["worker_id"])
             self.assertTrue(row["name"])
+            self.assertIn(row["gender"], GENDER_VALUES)
             self.assertIn(row["has_car"], {"true", "false"})
             self.assertTrue(set(_split_list(row["travel_modes"])).issubset(TRAVEL_MODES))
             self.assertTrue(row["travel_modes"])
@@ -155,6 +159,7 @@ class StandardizedCsvV1FixtureTests(unittest.TestCase):
         for row in service_users:
             self.assertTrue(row["service_user_id"])
             self.assertTrue(row["name"])
+            self.assertIn(row["gender"], GENDER_VALUES)
             self.assertGreaterEqual(int(row["required_worker_count"]), 1)
             self.assertIn(row["requires_driver"], {"true", "false"})
             self.assertIn(row["profile_is_stale"], {"true", "false"})

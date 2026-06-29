@@ -1,3 +1,3 @@
-service_user_id,name,home_label,home_postcode,home_latitude,home_longitude,home_area,support_level,required_worker_count,requires_driver,required_skills,communication_needs,interests,risk_tags,preferred_worker_ids,avoided_worker_ids,profile_is_stale,source_ref
-su-orchard,Orchard Service User,Synthetic orchard home,,,,NX1,1_to_1,1,false,personal_care,visual_prompts,music|swimming,road_safety,worker-alpha,,false,synthetic-service-users-row-2
-su-river,River Service User,Synthetic river home,,,,EX1,2_to_1,2,true,communication_support,short_instructions,parks,traffic_awareness,,worker-alpha,true,synthetic-service-users-row-3
+service_user_id,name,gender,home_label,home_postcode,home_latitude,home_longitude,home_area,support_level,required_worker_count,requires_driver,required_skills,communication_needs,interests,risk_tags,preferred_worker_ids,avoided_worker_ids,profile_is_stale,source_ref
+su-orchard,Orchard Service User,female,Synthetic orchard home,,,,NX1,1_to_1,1,false,personal_care,visual_prompts,music|swimming,road_safety,worker-alpha,,false,synthetic-service-users-row-2
+su-river,River Service User,male,Synthetic river home,,,,EX1,2_to_1,2,true,communication_support,short_instructions,parks,traffic_awareness,,worker-alpha,true,synthetic-service-users-row-3

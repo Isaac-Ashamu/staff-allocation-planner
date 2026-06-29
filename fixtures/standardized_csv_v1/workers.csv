@@ -1,3 +1,3 @@
-worker_id,name,home_label,home_postcode,home_latitude,home_longitude,home_area,travel_modes,has_car,skills,languages,willing_areas,current_hours,max_hours,preference_tags,reliability_score,source_ref
-worker-alpha,Alex Worker,Synthetic north base,,,,NX1,drive|walk,true,personal_care|road_safety,en,NX1|NX2,3.0,18,weekday_afternoons,0.9,synthetic-workers-row-2
-worker-bravo,Bailey Worker,Synthetic east base,,,,EX1,bus|walk,false,communication_support,en|es,EX1|NX1,0,12,,,synthetic-workers-row-3
+worker_id,name,gender,home_label,home_postcode,home_latitude,home_longitude,home_area,travel_modes,has_car,skills,languages,willing_areas,current_hours,max_hours,preference_tags,reliability_score,source_ref
+worker-alpha,Alex Worker,female,Synthetic north base,,,,NX1,drive|walk,true,personal_care|road_safety,en,NX1|NX2,3.0,18,weekday_afternoons,0.9,synthetic-workers-row-2
+worker-bravo,Bailey Worker,male,Synthetic east base,,,,EX1,bus|walk,false,communication_support,en|es,EX1|NX1,0,12,,,synthetic-workers-row-3

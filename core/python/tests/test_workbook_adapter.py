@@ -299,6 +299,7 @@ class WorkbookAdapterTests(unittest.TestCase):
                                 "postcode": "ZZ9 9ZZ",
                                 "support_level": "2:1",
                                 "required_worker_count": 2,
+                                "gender": "Female",
                             }
                         ],
                         "workers": [
@@ -308,6 +309,7 @@ class WorkbookAdapterTests(unittest.TestCase):
                                 "postcode": "ZZ8 8ZZ",
                                 "travel_modes": "bus",
                                 "has_car": False,
+                                "gender": "Male",
                             }
                         ],
                     }
@@ -328,9 +330,11 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertIn("su-trace", result.state.service_users)
             self.assertEqual("su-trace", result.state.sessions["booking-local"].service_user_id)
             self.assertEqual("ZZ9 9ZZ", result.state.service_users["su-trace"].home_location.postcode)
+            self.assertEqual("female", result.state.service_users["su-trace"].gender)
             self.assertIn("worker-local", result.state.workers)
             self.assertEqual("ZZ8 8ZZ", result.state.workers["worker-local"].home_location.postcode)
             self.assertEqual(frozenset({"bus"}), result.state.workers["worker-local"].travel_modes)
+            self.assertEqual("male", result.state.workers["worker-local"].gender)
             self.assertIn("service_user_added_from_alias_config", {issue.code for issue in report.warnings})
             self.assertIn("worker_added_from_alias_config", {issue.code for issue in report.warnings})
 
