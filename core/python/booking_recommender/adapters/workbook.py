@@ -1477,25 +1477,15 @@ def _availability_report_rows_from_text(
     row_number = 0
     index = 0
     while index < len(lines) - 2:
-        date_match = re.fullmatch(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*(\d{1,2})", lines[index])
-        month_match = re.fullmatch(
-            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})",
-            lines[index + 1],
-        )
-        if not date_match or not month_match:
+        parsed_date = _availability_report_date_at(lines, index)
+        if not parsed_date:
             index += 1
             continue
 
-        day_text = f"{int(date_match.group(1)):02d} {month_match.group(1)} {month_match.group(2)}"
-        day = datetime.strptime(day_text, "%d %b %Y").date()
-        index += 2
+        day, index = parsed_date
         fragments: list[str] = []
         while index < len(lines):
-            if (
-                re.fullmatch(r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*\d{1,2}", lines[index])
-                and index + 1 < len(lines)
-                and re.fullmatch(r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}", lines[index + 1])
-            ):
+            if _availability_report_date_at(lines, index):
                 break
             fragments.append(lines[index])
             if len(_availability_report_flags(" ".join(fragments))) >= 2:
@@ -1505,6 +1495,32 @@ def _availability_report_rows_from_text(
         row_number += 1
         rows.extend(_availability_windows_from_report_row(day, " ".join(fragments), path, row_number, issues))
     return rows
+
+
+def _availability_report_date_at(lines: list[str], index: int) -> tuple[date, int] | None:
+    if index + 1 >= len(lines):
+        return None
+    date_match = re.fullmatch(
+        r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*(\d{1,2})(?:\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))?",
+        lines[index],
+    )
+    if not date_match:
+        return None
+    month = date_match.group(2)
+    if month:
+        year_match = re.fullmatch(r"(\d{4})", lines[index + 1])
+        if not year_match:
+            return None
+        day_text = f"{int(date_match.group(1)):02d} {month} {year_match.group(1)}"
+    else:
+        month_match = re.fullmatch(
+            r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})",
+            lines[index + 1],
+        )
+        if not month_match:
+            return None
+        day_text = f"{int(date_match.group(1)):02d} {month_match.group(1)} {month_match.group(2)}"
+    return datetime.strptime(day_text, "%d %b %Y").date(), index + 2
 
 
 def _availability_windows_from_report_row(
@@ -1985,6 +2001,10 @@ def _name_lookup_keys(value: str) -> tuple[str, ...]:
     without_parentheses = re.sub(r"\([^)]*\)", " ", value)
     keys.append(_norm_name(without_parentheses))
     keys.append(_norm_name(re.sub(r"\((?:P|NR|DRIVER)\)", " ", value, flags=re.IGNORECASE)))
+    parenthetical_match = re.match(r"\s*(?P<prefix>.+?)\s+\([^)]+\)\s+(?P<rest>.+?)\s*$", value)
+    if parenthetical_match:
+        keys.append(_norm_name(parenthetical_match.group("prefix")))
+        keys.append(_norm_name(f"{parenthetical_match.group('prefix')} {parenthetical_match.group('rest')}"))
     nickname_match = re.match(r"\s*(?P<first>[A-Za-z'-]+)\s+\((?P<nickname>[^)]+)\)\s+(?P<rest>.+?)\s*$", value)
     if nickname_match:
         nickname = nickname_match.group("nickname")

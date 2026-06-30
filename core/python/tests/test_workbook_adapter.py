@@ -234,6 +234,58 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertNotIn("unresolved_name", session_warnings)
             self.assertNotIn("ambiguous_reference_text", session_warnings)
 
+    def test_import_sheet_sw_cell_comment_resolves_compound_first_name_worker(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "sessions.csv").unlink()
+            (source_dir / "staff.csv").write_text(
+                "\n".join(
+                    [
+                        "staff_id,name,postcode,travel_modes,has_car,skills,willing_areas,current_hours,max_hours",
+                        "worker-mei-lin,Mei Lin (Rosa) Tan,AA1 1AA,bus,false,visual_support,AA1,0,20",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            _write_xlsx(
+                source_dir / "booking-import.xlsx",
+                {
+                    "Bookings": [
+                        [
+                            "booking_id",
+                            "child_id",
+                            "booking_date",
+                            "booking_start_time",
+                            "booking_finish_time",
+                            "lead_sw_id",
+                            "2to1_required",
+                            "car",
+                            "recurring",
+                        ],
+                        ["booking-mei-lin", "su-brook", "2026-07-10", "14:00", "16:00", "820", "false", "false", "false"],
+                    ],
+                },
+                comments={("Bookings", "F2"): ("Planner", "Mei Lin")},
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-mei-lin")
+            result = load_standardized_csv(output_dir)
+
+            self.assertIn("worker-mei-lin", result.state.workers)
+            self.assertNotIn("820", result.state.workers)
+            session = result.state.sessions["booking-mei-lin"]
+            self.assertEqual(("worker-mei-lin",), tuple(item.worker_id for item in session.assigned))
+            session_warnings = {
+                issue.code
+                for issue in report.warnings
+                if issue.source == "sessions" and issue.row_number == 2
+            }
+            self.assertNotIn("unresolved_name", session_warnings)
+            self.assertNotIn("unresolved_import_sheet_worker_note", session_warnings)
+
     def test_import_sheet_sw_cell_comment_does_not_create_placeholder_worker(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_dir = Path(temp_dir) / "source"
@@ -670,6 +722,9 @@ class WorkbookAdapterTests(unittest.TestCase):
                     "Fri, 10",
                     "Jul 2026",
                     "Sage River (Scout) NO NO 10:00 11:00",
+                    "Fri, 17 Jul",
+                    "2026",
+                    "Moss Worker YES NO",
                     "Fri, 10",
                     "Jul 2026",
                     "Recruit Worker (R) YES NO",
@@ -687,13 +742,14 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertEqual("Lane Worker (P)", result.state.workers["worker-lane"].name)
             self.assertEqual("2026-07-10T08:00:00+01:00", lane_windows[0].start.isoformat())
             self.assertEqual("2026-07-10T23:00:00+01:00", lane_windows[0].end.isoformat())
-            self.assertEqual(2, len(moss_windows))
+            self.assertEqual(3, len(moss_windows))
             self.assertEqual(
                 ["2026-07-10T09:00:00+01:00", "2026-07-10T14:00:00+01:00"],
-                [window.start.isoformat() for window in moss_windows],
+                [window.start.isoformat() for window in moss_windows[:2]],
             )
+            self.assertEqual("2026-07-17T08:00:00+01:00", moss_windows[2].start.isoformat())
             self.assertEqual(1, len(result.state.workers["worker-sage"].availability))
-            self.assertEqual(4, report.row_counts["availability"])
+            self.assertEqual(5, report.row_counts["availability"])
 
 
 def _file_hashes(folder: Path) -> dict[str, str]:
