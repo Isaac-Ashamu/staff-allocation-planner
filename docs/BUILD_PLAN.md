@@ -26,12 +26,18 @@ Done:
 - First care-provider adapter converts synthetic workbook-shaped source exports into
   standardized CSV v1 output.
 - Upgrade roadmap is documented.
+- Local SQLite persistence and recommendation audit storage exist.
+- Local review UI exists for proposed-plan review and decision capture.
+- Travel provider/cache foundation exists with postcode/geocode normalization,
+  deterministic fallback estimates, provider-outage warnings, and mode-aware
+  cache keys.
 
 Partly done:
 
 - Hard constraints exist and Phase 1 guardrails are covered by tests; broader
   production validation will continue as importer and UI surfaces are added.
-- Travel is represented in the model, but only via a pluggable estimator.
+- Travel is represented through a provider/cache interface; production external
+  map and public-transport adapters are still pending.
 - Exogenous events exist for worker unavailability, family requests, and stale
   service-user profiles; Phase 1 repair behavior is covered by tests.
 - Local source-data examples exist; the first adapter path is available, but
@@ -41,11 +47,10 @@ Not done:
 
 - Data-quality validation report.
 - Broader tenant-specific email/document adapters.
-- Persistent database.
+- Production Postgres persistence.
 - API service.
-- Review UI.
-- Real travel-time provider integration.
-- Decision audit storage.
+- Production authenticated review UI.
+- Production external map/public-transport workbook adapters.
 - Feedback/outcome learning loop.
 - SaaS tenancy, security, deployment, and operations.
 
@@ -577,29 +582,80 @@ Acceptance criteria:
 
 ## Phase 9: Add Real Travel-Time Support
 
-Status: Pending.
+Status: Done.
 
 Goal: make travel a reliable hard constraint and scoring signal.
 
+Implemented:
+
+- Added `booking_recommender.travel` with a mode-specific travel provider
+  interface and explicit provider failure error type.
+- Added provider configuration with offline defaults:
+  `travel_provider_order=["cache", "postcode_distance", "fallback"]`,
+  `enable_external_travel=false`, external API env-var names, route timeouts,
+  retry count, matrix/call caps, Google opt-in, and provider-failure fallback.
+- Added postcode, area, coordinate, and time-bucket normalization helpers for
+  stable cache identity.
+- Added in-memory and SQLite estimate caches keyed by tenant, normalized origin,
+  normalized destination, travel mode, day type, and departure-time bucket.
+- Moved fallback travel estimates into the shared travel layer so CLI, review
+  UI, planner tests, and future providers use the same semantics.
+- Added `CachedTravelEstimator`, which uses provider estimates when available,
+  serves cached estimates deterministically, and degrades to warning-backed
+  fallback estimates when providers fail or return the wrong mode.
+- Added `FallbackTravelProvider`, `PostcodeDistanceProvider`,
+  `OpenRouteServiceProvider`, `OSRMProvider`, guarded `GoogleRoutesProvider`
+  stub, and GTFS-ready `PublicTransportProvider` stub.
+- External providers are not default paths. ORS and OSRM require explicit
+  external-travel config plus env/config credentials; Google additionally
+  requires `enable_google_routes=true`.
+- Preserved hard travel constraints in scoring for travel mode, driver-required
+  sessions, pre-session travel feasibility, next-session travel feasibility,
+  route buffers, and max planned travel time.
+- Surfaced warnings from both primary and next-session route estimates in
+  recommendations.
+- Allocation reports now include travel-provider counts, provider-failure
+  counts, travel-infeasible candidate counts, and a warning when all accepted
+  assignments use fallback travel.
+- Added tests for cache keys, postcode/time-bucket normalization, cache reuse,
+  provider contracts, fallback behavior, postcode-distance estimates, provider
+  failures, provider mode mismatches, disabled external providers, Google opt-in
+  guardrails, public-transport fallback behavior, report warnings, and
+  slow-route hard failures.
+
+Production follow-up:
+
+- Configure and validate real ORS/OSRM endpoints in the deployment environment
+  before enabling external travel for a tenant.
+- Implement the full Google Routes API integration only if explicitly approved
+  for a tenant with cost controls in place.
+- Load tenant/region public-transport GTFS/TXC datasets, such as TfGM sources
+  for Greater Manchester, behind the `PublicTransportProvider`.
+
 Tasks:
 
-- Define a travel provider interface.
-- Add postcode/geocode normalization.
-- Add cached fallback estimates.
+- Define a travel provider interface. Done.
+- Add postcode/geocode normalization. Done.
+- Add cached fallback estimates. Done with in-memory and SQLite cache support.
 - Add provider-backed estimates for drive, public transport, walk, cycle, and
-  taxi where available.
+  taxi where available. Done for offline fallback/postcode estimates, guarded
+  ORS/OSRM integrations, Google opt-in stub, and GTFS-ready public transport
+  stub.
 - Include departure time, day of week, home location, previous session location,
-  next session location, and route buffers.
-- Store confidence and warnings with estimates.
-- Cache estimates by tenant, origin, destination, mode, and time bucket.
-- Add tests for cache keys, fallback behavior, and provider failures.
+  next session location, and route buffers. Done through estimator inputs,
+  chronological origin selection, next-session checks, day-type cache keys, and
+  time buckets.
+- Store confidence and warnings with estimates. Done.
+- Cache estimates by tenant, origin, destination, mode, and time bucket. Done.
+- Add tests for cache keys, fallback behavior, and provider failures. Done.
 
 Acceptance criteria:
 
-- Travel failures block infeasible candidates.
-- Travel warnings are visible in recommendations.
+- Travel failures block infeasible candidates. Done.
+- Travel warnings are visible in recommendations. Done.
 - Provider outages degrade to warnings or cached estimates, not silent bad data.
-- Drive and public-transport estimates are not treated as interchangeable.
+  Done.
+- Drive and public-transport estimates are not treated as interchangeable. Done.
 
 ## Phase 10: Upgrade The Planner
 

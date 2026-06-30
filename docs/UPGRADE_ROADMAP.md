@@ -69,7 +69,8 @@ Outputs:
 
 ## Phase 3: Travel-Time Service
 
-Status: deferred until the core foundation is stable.
+Status: provider/cache foundation implemented with offline defaults; external
+providers require tenant deployment configuration before use.
 
 Travel should come back after the standardized importer and allocation planner
 are stable.
@@ -89,6 +90,21 @@ Required behavior:
 - Use departure time, day of week, previous session location, and buffers.
 - Cache estimates by tenant, origin, destination, mode, and time bucket.
 - Surface uncertainty when only postcode-level estimates are available.
+
+Implemented foundation:
+
+- Mode-specific provider interface.
+- Postcode, area, coordinate, and time-bucket normalization.
+- Tenant/mode/location/day-type/time-bucket cache keys.
+- In-memory and SQLite travel caches.
+- Offline fallback and postcode-distance providers.
+- Guarded OpenRouteService and OSRM providers, disabled unless configured.
+- Google Routes later-stage provider stub, disabled by default with explicit
+  opt-in and cost-control configuration.
+- GTFS-ready public transport provider stub for future TfGM/GTFS/TXC schedule
+  ingestion.
+- Deterministic warning-backed fallback estimates.
+- Provider failure and provider mode-mismatch warnings in recommendations.
 
 ## Phase 4: Sequential Planner
 

@@ -23,11 +23,11 @@ from .models import (
     Session,
     SourceReference,
     TravelEstimate,
-    TravelMode,
     Worker,
 )
 from .planner import rank_session_candidates
 from .scoring import TravelEstimator
+from .travel import FallbackTravelEstimator
 
 
 @dataclass(frozen=True)
@@ -38,36 +38,6 @@ class AllocationReport:
     initial_state: PlanningState
     plan: GreedyPlan
     single_session_rankings: Mapping[str, tuple[Recommendation, ...]]
-
-
-class FallbackTravelEstimator:
-    """Small deterministic estimator for local planning before map providers exist."""
-
-    def estimate(self, *, worker: Worker, origin: Location, destination: Location, departure_time) -> TravelEstimate:
-        mode = _preferred_mode(worker)
-        minutes = 20.0
-        warnings: list[str] = []
-
-        if origin.area and destination.area:
-            minutes = 12.0 if origin.area == destination.area else 35.0
-        elif origin.latitude is not None and destination.latitude is not None:
-            minutes = 25.0
-        else:
-            minutes = 30.0
-            warnings.append("fallback travel estimate used because location data is incomplete")
-
-        if mode == TravelMode.WALK:
-            minutes *= 1.5
-        elif mode in {TravelMode.BUS, TravelMode.PUBLIC_TRANSPORT, TravelMode.TRAM, TravelMode.TRAIN}:
-            minutes *= 1.25
-
-        return TravelEstimate(
-            mode=mode,
-            minutes=round(minutes, 1),
-            confidence=0.35,
-            provider="fallback",
-            warnings=tuple(warnings),
-        )
 
 
 def build_allocation_report(
@@ -123,6 +93,7 @@ def allocation_report_to_dict(report: AllocationReport) -> dict:
         if _is_open_session(session) and len(session.assigned) < session.required_worker_count
     )
     blocked_assignments = tuple(item for item in report.plan.assignments if not item.accepted)
+    travel_summary = _travel_report_summary(report.plan.assignments)
 
     return {
         "run": {
@@ -137,7 +108,9 @@ def allocation_report_to_dict(report: AllocationReport) -> dict:
             "blocked_decisions": len(blocked_assignments),
             "import_errors": len(report.import_report.errors),
             "import_warnings": len(report.import_report.warnings),
+            "travel": travel_summary,
         },
+        "travel_summary": travel_summary,
         "import_report": import_report_to_dict(report.import_report),
         "planning_snapshot": planning_state_to_dict(final_state),
         "proposed_plan": {
@@ -231,6 +204,23 @@ def render_allocation_report(report: AllocationReport) -> str:
                 f"- {session_id}: top one-session candidate {top['worker_id']} "
                 f"score {top['score']}"
             )
+
+    travel = data["travel_summary"]
+    lines.append("")
+    lines.append("Travel estimates")
+    lines.append(
+        "- "
+        f"cache {travel['estimates_from_cache']}, "
+        f"fallback {travel['estimates_from_fallback']}, "
+        f"postcode_distance {travel['estimates_from_postcode_distance']}, "
+        f"ORS {travel['estimates_from_ors']}, "
+        f"OSRM {travel['estimates_from_osrm']}, "
+        f"Google {travel['estimates_from_google']}, "
+        f"provider failures {travel['provider_failures']}, "
+        f"travel-infeasible candidates {travel['travel_infeasible_candidates']}"
+    )
+    if travel["all_accepted_assignments_used_fallback"]:
+        lines.append("- warning: all accepted assignments used fallback travel estimates")
 
     if report.import_report.warnings:
         lines.append("")
@@ -480,14 +470,68 @@ def location_to_dict(location: Location) -> dict:
 
 def travel_estimate_to_dict(estimate: TravelEstimate) -> dict:
     return {
+        "origin": location_to_dict(estimate.origin) if estimate.origin else None,
+        "destination": location_to_dict(estimate.destination) if estimate.destination else None,
         "mode": estimate.mode.value,
+        "departure_time": estimate.departure_time.isoformat() if estimate.departure_time else None,
+        "duration_minutes": estimate.duration_minutes,
         "minutes": estimate.minutes,
+        "distance_meters": estimate.distance_meters,
         "distance_km": estimate.distance_km,
         "cost": estimate.cost,
         "confidence": estimate.confidence,
         "provider": estimate.provider,
         "warnings": list(estimate.warnings),
+        "cached": estimate.cached,
     }
+
+
+def _travel_report_summary(assignments) -> dict:
+    counts = {
+        "estimates_from_cache": 0,
+        "estimates_from_fallback": 0,
+        "estimates_from_postcode_distance": 0,
+        "estimates_from_ors": 0,
+        "estimates_from_osrm": 0,
+        "estimates_from_google": 0,
+        "provider_failures": 0,
+        "travel_infeasible_candidates": 0,
+        "all_accepted_assignments_used_fallback": False,
+    }
+    accepted_estimates = []
+    for assignment in assignments:
+        recommendations = assignment.candidates or (assignment.recommendation,)
+        for recommendation in recommendations:
+            estimate = recommendation.travel_estimate
+            if estimate is None:
+                continue
+            if estimate.cached:
+                counts["estimates_from_cache"] += 1
+            if estimate.provider == "fallback":
+                counts["estimates_from_fallback"] += 1
+            elif estimate.provider == "postcode_distance":
+                counts["estimates_from_postcode_distance"] += 1
+            elif estimate.provider == "openrouteservice":
+                counts["estimates_from_ors"] += 1
+            elif estimate.provider == "osrm":
+                counts["estimates_from_osrm"] += 1
+            elif estimate.provider == "google_routes":
+                counts["estimates_from_google"] += 1
+            if any("travel provider" in warning and "failed" in warning for warning in recommendation.warnings):
+                counts["provider_failures"] += 1
+            if any(_is_travel_failure(failure) for failure in recommendation.hard_constraint_failures):
+                counts["travel_infeasible_candidates"] += 1
+        if assignment.accepted and assignment.recommendation.travel_estimate:
+            accepted_estimates.append(assignment.recommendation.travel_estimate)
+    counts["all_accepted_assignments_used_fallback"] = bool(accepted_estimates) and all(
+        estimate.provider == "fallback" for estimate in accepted_estimates
+    )
+    return counts
+
+
+def _is_travel_failure(failure: str) -> bool:
+    text = failure.lower()
+    return "travel" in text or "driver" in text or "route" in text
 
 
 def _accepted_details_for_session(recommendation_details, session_id: str):
@@ -518,24 +562,6 @@ def _blocked_candidates(recommendation_details):
 
 def _join_or_default(values, default: str) -> str:
     return "; ".join(values) if values else default
-
-
-def _preferred_mode(worker: Worker) -> TravelMode:
-    if worker.has_car and TravelMode.DRIVE in worker.travel_modes:
-        return TravelMode.DRIVE
-    for mode in (
-        TravelMode.PUBLIC_TRANSPORT,
-        TravelMode.BUS,
-        TravelMode.TRAM,
-        TravelMode.TRAIN,
-        TravelMode.CYCLE,
-        TravelMode.WALK,
-        TravelMode.TAXI,
-        TravelMode.DRIVE,
-    ):
-        if mode in worker.travel_modes:
-            return mode
-    return TravelMode.WALK
 
 
 def _is_open_session(session: Session) -> bool:

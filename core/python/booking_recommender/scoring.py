@@ -70,18 +70,18 @@ def score_assign_action(
     )
     warnings.extend(travel_estimate.warnings)
     next_session = _next_allocated_session_after(state, worker, session)
-    failures.extend(
-        _travel_failures(
-            state,
-            worker,
-            service_user,
-            session,
-            travel_estimate,
-            departure_time,
-            travel_estimator,
-            next_session,
-        )
+    travel_failures, travel_warnings = _travel_failures(
+        state,
+        worker,
+        service_user,
+        session,
+        travel_estimate,
+        departure_time,
+        travel_estimator,
+        next_session,
     )
+    failures.extend(travel_failures)
+    warnings.extend(travel_warnings)
 
     if failures:
         return Recommendation(
@@ -234,8 +234,9 @@ def _travel_failures(
     departure_time,
     travel_estimator: TravelEstimator,
     next_session: Session | None,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     failures: list[str] = []
+    warnings: list[str] = []
 
     if estimate.mode not in worker.travel_modes:
         failures.append(f"travel estimate mode {estimate.mode.value} is not allowed for worker")
@@ -268,13 +269,14 @@ def _travel_failures(
             destination=next_session.location,
             departure_time=session.end,
         )
+        warnings.extend(f"next session route: {warning}" for warning in next_estimate.warnings)
         if next_estimate.mode not in worker.travel_modes:
             failures.append(f"next travel estimate mode {next_estimate.mode.value} is not allowed for worker")
         earliest_arrival = session.end + timedelta(minutes=next_estimate.minutes + after_buffer_minutes)
         if earliest_arrival > next_session.start:
             failures.append("not enough time to travel to next allocated session")
 
-    return tuple(failures)
+    return tuple(failures), tuple(warnings)
 
 
 def _action_guardrail_failures(state: PlanningState, action: AssignAction) -> tuple[str, ...]:
@@ -390,7 +392,7 @@ def _travel_fit_value(state: PlanningState, estimate: TravelEstimate) -> float:
     if max_minutes <= 0:
         return 0.0
     time_score = max(0.0, 1.0 - (estimate.minutes / max_minutes))
-    confidence = max(0.0, min(1.0, estimate.confidence))
+    confidence = _confidence_value(estimate.confidence)
     return time_score * (0.5 + confidence / 2.0)
 
 
@@ -398,3 +400,9 @@ def _load_balance_value(worker: Worker) -> float:
     if worker.max_hours is None or worker.max_hours <= 0:
         return 0.5
     return max(0.0, 1.0 - (worker.current_hours / worker.max_hours))
+
+
+def _confidence_value(value) -> float:
+    if isinstance(value, (int, float)):
+        return max(0.0, min(1.0, float(value)))
+    return {"high": 0.9, "medium": 0.6, "low": 0.3}.get(str(value).lower(), 0.3)

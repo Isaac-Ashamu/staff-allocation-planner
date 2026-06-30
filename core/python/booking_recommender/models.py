@@ -180,15 +180,78 @@ class FamilyRequest:
     source_reference: SourceReference | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class TravelEstimate:
+    origin: Location | None
+    destination: Location | None
     mode: TravelMode
-    minutes: float
-    distance_km: float | None = None
-    cost: float | None = None
-    confidence: float = 0.5
-    provider: str = "unknown"
-    warnings: tuple[str, ...] = ()
+    departure_time: datetime | None
+    duration_minutes: float
+    distance_meters: float | None
+    provider: str
+    confidence: str
+    warnings: tuple[str, ...]
+    cached: bool
+    cost: float | None
+
+    def __init__(
+        self,
+        *,
+        mode: TravelMode,
+        origin: Location | None = None,
+        destination: Location | None = None,
+        departure_time: datetime | None = None,
+        duration_minutes: float | None = None,
+        minutes: float | None = None,
+        distance_meters: float | None = None,
+        distance_km: float | None = None,
+        provider: str = "unknown",
+        confidence: str | float = "low",
+        warnings: tuple[str, ...] = (),
+        cached: bool = False,
+        cost: float | None = None,
+    ) -> None:
+        resolved_minutes = duration_minutes if duration_minutes is not None else minutes
+        if resolved_minutes is None:
+            raise TypeError("TravelEstimate requires duration_minutes or minutes")
+        resolved_distance = distance_meters
+        if resolved_distance is None and distance_km is not None:
+            resolved_distance = distance_km * 1000.0
+
+        object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "destination", destination)
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "departure_time", departure_time)
+        object.__setattr__(self, "duration_minutes", float(resolved_minutes))
+        object.__setattr__(self, "distance_meters", resolved_distance)
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "confidence", _travel_confidence_label(confidence))
+        object.__setattr__(self, "warnings", tuple(warnings))
+        object.__setattr__(self, "cached", bool(cached))
+        object.__setattr__(self, "cost", cost)
+
+    @property
+    def minutes(self) -> float:
+        return self.duration_minutes
+
+    @property
+    def distance_km(self) -> float | None:
+        if self.distance_meters is None:
+            return None
+        return self.distance_meters / 1000.0
+
+
+def _travel_confidence_label(value: str | float) -> str:
+    if isinstance(value, (int, float)):
+        if value >= 0.75:
+            return "high"
+        if value >= 0.45:
+            return "medium"
+        return "low"
+    normalized = value.strip().lower()
+    if normalized in {"high", "medium", "low"}:
+        return normalized
+    return "low"
 
 
 @dataclass(frozen=True)
