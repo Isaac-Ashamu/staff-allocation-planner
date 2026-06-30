@@ -107,6 +107,82 @@ class StandardizedImporterTests(unittest.TestCase):
         self.assertIn("invalid_compatibility_status", codes)
         self.assertIn("invalid_gender", codes)
 
+    def test_existing_imported_assignment_outside_availability_is_audited(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            import_dir = Path(temp_dir) / "standardized_csv_v1"
+            shutil.copytree(FIXTURE_DIR, import_dir)
+            _update_csv(
+                import_dir / "sessions.csv",
+                lambda row: row.update(
+                    {
+                        "assigned_worker_ids": "worker-alpha",
+                        "assigned_roles": "lead",
+                        "status": "allocated",
+                    }
+                )
+                if row["session_id"] == "session-100"
+                else None,
+            )
+            _update_csv(
+                import_dir / "availability.csv",
+                lambda row: row.update(
+                    {
+                        "start": "2026-07-10T09:00:00+01:00",
+                        "end": "2026-07-10T12:00:00+01:00",
+                    }
+                )
+                if row["worker_id"] == "worker-alpha"
+                else None,
+            )
+
+            result = load_standardized_csv(import_dir)
+
+        issues = [issue for issue in result.report.warnings if issue.code == "existing_assignment_outside_availability"]
+        self.assertEqual(1, len(issues))
+        self.assertEqual("sessions", issues[0].table)
+        self.assertEqual("assigned_worker_ids", issues[0].field)
+        self.assertIn("not a recommender-selected assignment", issues[0].message)
+
+    def test_missing_session_location_points_to_missing_service_user_home_location(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            import_dir = Path(temp_dir) / "standardized_csv_v1"
+            shutil.copytree(FIXTURE_DIR, import_dir)
+            _update_csv(
+                import_dir / "service_users.csv",
+                lambda row: row.update(
+                    {
+                        "home_label": "",
+                        "home_postcode": "",
+                        "home_latitude": "",
+                        "home_longitude": "",
+                        "home_area": "",
+                    }
+                )
+                if row["service_user_id"] == "su-orchard"
+                else None,
+            )
+            _update_csv(
+                import_dir / "sessions.csv",
+                lambda row: row.update(
+                    {
+                        "location_label": "",
+                        "location_postcode": "",
+                        "location_latitude": "",
+                        "location_longitude": "",
+                        "location_area": "",
+                    }
+                )
+                if row["session_id"] == "session-100"
+                else None,
+            )
+
+            result = load_standardized_csv(import_dir)
+
+        codes = [issue.code for issue in result.report.warnings]
+        self.assertIn("missing_service_user_location", codes)
+        self.assertIn("missing_session_location_due_to_missing_service_user_location", codes)
+        self.assertNotIn("missing_location", codes)
+
     def test_cli_prints_deterministic_summary(self):
         completed = subprocess.run(
             [

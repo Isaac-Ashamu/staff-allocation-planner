@@ -30,6 +30,19 @@ from .scoring import TravelEstimator
 from .travel import FallbackTravelEstimator
 
 
+EXISTING_ASSIGNMENT_AUDIT_CODES = {
+    "existing_assignment_missing_availability",
+    "existing_assignment_outside_availability",
+    "existing_assignment_overlaps_unavailability",
+}
+LOCATION_AUDIT_CODES = {
+    "missing_worker_location",
+    "missing_service_user_location",
+    "missing_session_location",
+    "missing_session_location_due_to_missing_service_user_location",
+}
+
+
 @dataclass(frozen=True)
 class AllocationReport:
     source_folder: str
@@ -94,6 +107,7 @@ def allocation_report_to_dict(report: AllocationReport) -> dict:
     )
     blocked_assignments = tuple(item for item in report.plan.assignments if not item.accepted)
     travel_summary = _travel_report_summary(report.plan.assignments)
+    data_quality_audit = _data_quality_audit(report.import_report)
 
     return {
         "run": {
@@ -108,9 +122,12 @@ def allocation_report_to_dict(report: AllocationReport) -> dict:
             "blocked_decisions": len(blocked_assignments),
             "import_errors": len(report.import_report.errors),
             "import_warnings": len(report.import_report.warnings),
+            "existing_assignment_audit_warnings": len(data_quality_audit["existing_imported_assignment_issues"]),
+            "location_audit_warnings": len(data_quality_audit["location_issues"]),
             "travel": travel_summary,
         },
         "travel_summary": travel_summary,
+        "data_quality_audit": data_quality_audit,
         "import_report": import_report_to_dict(report.import_report),
         "planning_snapshot": planning_state_to_dict(final_state),
         "proposed_plan": {
@@ -222,6 +239,20 @@ def render_allocation_report(report: AllocationReport) -> str:
     if travel["all_accepted_assignments_used_fallback"]:
         lines.append("- warning: all accepted assignments used fallback travel estimates")
 
+    audit = data["data_quality_audit"]
+    if audit["existing_imported_assignment_issues"] or audit["location_issues"]:
+        lines.append("")
+        lines.append("Data quality audit")
+        lines.append(
+            "- existing imported assignment availability issues: "
+            f"{len(audit['existing_imported_assignment_issues'])}"
+        )
+        for issue in audit["existing_imported_assignment_issues"]:
+            lines.append(f"  - {issue['code']}: {issue['message']}")
+        lines.append(f"- location issues: {len(audit['location_issues'])}")
+        for issue in audit["location_issues"]:
+            lines.append(f"  - {issue['code']}: {issue['message']}")
+
     if report.import_report.warnings:
         lines.append("")
         lines.append("Import warnings")
@@ -247,6 +278,23 @@ def import_issue_to_dict(issue: ImportIssue) -> dict:
         "row_number": issue.row_number,
         "field": issue.field,
         "source_ref": issue.source_ref,
+    }
+
+
+def _data_quality_audit(report: ImportReport) -> dict:
+    existing_assignment_issues = [
+        import_issue_to_dict(issue)
+        for issue in report.warnings
+        if issue.code in EXISTING_ASSIGNMENT_AUDIT_CODES
+    ]
+    location_issues = [
+        import_issue_to_dict(issue)
+        for issue in report.warnings
+        if issue.code in LOCATION_AUDIT_CODES
+    ]
+    return {
+        "existing_imported_assignment_issues": existing_assignment_issues,
+        "location_issues": location_issues,
     }
 
 

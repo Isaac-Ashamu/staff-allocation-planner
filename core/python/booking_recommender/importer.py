@@ -144,7 +144,7 @@ def load_standardized_csv(
     pair_history = _parse_pair_history(rows_by_file.get("pair_history.csv", ()), import_run_id, workers, service_users, issues)
     family_requests = _parse_family_requests(rows_by_file.get("family_requests.csv", ()), import_run_id, workers, service_users, issues)
 
-    _add_quality_warnings(workers, service_users, compatibility, issues)
+    _add_quality_warnings(workers, service_users, sessions, compatibility, issues)
 
     report = ImportReport(row_counts=row_counts, issues=tuple(sorted(issues, key=_issue_sort_key)))
     if report.errors:
@@ -488,7 +488,7 @@ def _parse_family_requests(rows, import_run_id: str, workers, service_users, iss
     return tuple(requests)
 
 
-def _add_quality_warnings(workers, service_users, compatibility, issues) -> None:
+def _add_quality_warnings(workers, service_users, sessions, compatibility, issues) -> None:
     for worker in workers.values():
         if not worker.travel_modes:
             _add_issue(issues, "warning", "missing_travel_mode", f"worker {worker.id} has no travel modes", "workers", worker.source_reference.row_number if worker.source_reference else None, "travel_modes", worker.source_reference.source_ref if worker.source_reference else None)
@@ -498,7 +498,92 @@ def _add_quality_warnings(workers, service_users, compatibility, issues) -> None
             _add_issue(issues, "warning", "missing_worker_location", f"worker {worker.id} has no usable home location", "workers", worker.source_reference.row_number if worker.source_reference else None)
     for service_user in service_users.values():
         if not _has_usable_location(service_user.home_location):
-            _add_issue(issues, "warning", "missing_service_user_location", f"service user {service_user.id} has no usable home location", "service_users", service_user.source_reference.row_number if service_user.source_reference else None)
+            _add_issue(
+                issues,
+                "warning",
+                "missing_service_user_location",
+                f"service user {service_user.id} ({service_user.name}) has no usable home location",
+                "service_users",
+                service_user.source_reference.row_number if service_user.source_reference else None,
+                source_ref=service_user.source_reference.source_ref if service_user.source_reference else None,
+            )
+    for session in sessions.values():
+        service_user = service_users.get(session.service_user_id)
+        if not _has_usable_location(session.location):
+            if service_user is not None and not _has_usable_location(service_user.home_location):
+                _add_issue(
+                    issues,
+                    "warning",
+                    "missing_session_location_due_to_missing_service_user_location",
+                    (
+                        f"session {session.id} has no usable location because service user "
+                        f"{service_user.id} ({service_user.name}) has no usable home location to backfill"
+                    ),
+                    "sessions",
+                    session.source_reference.row_number if session.source_reference else None,
+                    "location",
+                    session.source_reference.source_ref if session.source_reference else None,
+                )
+            else:
+                _add_issue(
+                    issues,
+                    "warning",
+                    "missing_session_location",
+                    f"session {session.id} has no usable explicit or backfilled location",
+                    "sessions",
+                    session.source_reference.row_number if session.source_reference else None,
+                    "location",
+                    session.source_reference.source_ref if session.source_reference else None,
+                )
+        for allocation in session.assigned:
+            worker = workers.get(allocation.worker_id)
+            if worker is None:
+                continue
+            if not worker.availability:
+                _add_issue(
+                    issues,
+                    "warning",
+                    "existing_assignment_missing_availability",
+                    (
+                        f"source assignment {worker.id} ({worker.name}) on session {session.id} "
+                        "has no explicit availability evidence; this is an imported booking audit, "
+                        "not a recommender-selected assignment"
+                    ),
+                    "sessions",
+                    session.source_reference.row_number if session.source_reference else None,
+                    "assigned_worker_ids",
+                    session.source_reference.source_ref if session.source_reference else None,
+                )
+            elif not any(_contains(window, session.start, session.end) for window in worker.availability):
+                _add_issue(
+                    issues,
+                    "warning",
+                    "existing_assignment_outside_availability",
+                    (
+                        f"source assignment {worker.id} ({worker.name}) on session {session.id} is outside "
+                        "that worker's explicit availability window; this is an imported booking audit, "
+                        "not a recommender-selected assignment"
+                    ),
+                    "sessions",
+                    session.source_reference.row_number if session.source_reference else None,
+                    "assigned_worker_ids",
+                    session.source_reference.source_ref if session.source_reference else None,
+                )
+            if any(_overlaps(window, session.start, session.end) for window in worker.unavailability):
+                _add_issue(
+                    issues,
+                    "warning",
+                    "existing_assignment_overlaps_unavailability",
+                    (
+                        f"source assignment {worker.id} ({worker.name}) on session {session.id} overlaps "
+                        "that worker's explicit unavailability; this is an imported booking audit, "
+                        "not a recommender-selected assignment"
+                    ),
+                    "sessions",
+                    session.source_reference.row_number if session.source_reference else None,
+                    "assigned_worker_ids",
+                    session.source_reference.source_ref if session.source_reference else None,
+                )
 
 
 def _start_end(row, table: str, issues: list[ImportIssue]) -> tuple[datetime | None, datetime | None]:
@@ -522,13 +607,19 @@ def _location(row, prefix: str, table: str, issues: list[ImportIssue]) -> Locati
         longitude=longitude,
         area=row.get(f"{prefix}_area") or None,
     )
-    if not _has_usable_location(location):
-        _add_row_issue(issues, "warning", "missing_location", f"{prefix} location has no label, postcode, coordinates, or area", table, row)
     return location
 
 
 def _has_usable_location(location: Location) -> bool:
     return bool(location.label or location.postcode or location.area or (location.latitude is not None and location.longitude is not None))
+
+
+def _contains(window: AvailabilityWindow, start: datetime, end: datetime) -> bool:
+    return window.start <= start and end <= window.end
+
+
+def _overlaps(window: AvailabilityWindow, start: datetime, end: datetime) -> bool:
+    return start < window.end and end > window.start
 
 
 def _required(row, field: str, table: str, issues: list[ImportIssue]) -> str:
