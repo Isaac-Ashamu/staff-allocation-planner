@@ -234,7 +234,7 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertNotIn("unresolved_name", session_warnings)
             self.assertNotIn("ambiguous_reference_text", session_warnings)
 
-    def test_import_sheet_sw_cell_comment_can_create_traceable_placeholder_worker(self):
+    def test_import_sheet_sw_cell_comment_does_not_create_placeholder_worker(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             source_dir = Path(temp_dir) / "source"
             output_dir = Path(temp_dir) / "out"
@@ -264,11 +264,10 @@ class WorkbookAdapterTests(unittest.TestCase):
             report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-sw-placeholder")
             result = load_standardized_csv(output_dir)
 
-            self.assertIn("900", result.state.workers)
-            self.assertEqual("Guest Worker", result.state.workers["900"].name)
+            self.assertNotIn("900", result.state.workers)
             session = result.state.sessions["booking-placeholder"]
-            self.assertEqual(("900",), tuple(item.worker_id for item in session.assigned))
-            self.assertIn("worker_created_from_import_sheet_note", {issue.code for issue in report.warnings})
+            self.assertEqual((), tuple(item.worker_id for item in session.assigned))
+            self.assertIn("unresolved_import_sheet_worker_note", {issue.code for issue in report.warnings})
 
     def test_local_alias_config_resolves_workers_service_users_and_local_records(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -420,6 +419,62 @@ class WorkbookAdapterTests(unittest.TestCase):
                 ],
                 [session.start.isoformat() for session in weekly_sessions],
             )
+
+    def test_adapter_merges_logical_duplicate_sessions_and_preserves_assignments(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "sessions.csv").write_text(
+                "\n".join(
+                    [
+                        "booking_id,child_id,booking_date,booking_start_time,booking_finish_time,lead_sw_id,2nd_sw_id,2to1_required,car,recurring",
+                        "booking-dup-a,su-brook,10/07/2026,13:50,15:50,worker-lane,,false,false,false",
+                        "booking-dup-b,su-brook,10/07/2026,13:50:00,15:50:00,worker-moss,,false,false,false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-dedupe")
+            result = load_standardized_csv(output_dir)
+
+            self.assertIn("duplicate_logical_session_merged", {issue.code for issue in report.warnings})
+            self.assertEqual(1, len(result.state.sessions))
+            session = next(iter(result.state.sessions.values()))
+            self.assertEqual("2026-07-10T13:50:00+01:00", session.start.isoformat())
+            self.assertEqual(
+                ("worker-lane", "worker-moss"),
+                tuple(allocation.worker_id for allocation in session.assigned),
+            )
+            self.assertEqual(2, session.required_worker_count)
+            self.assertIn("workbook-sessions-row-2", session.source_reference.source_ref)
+            self.assertIn("workbook-sessions-row-3", session.source_reference.source_ref)
+
+    def test_adapter_backfills_blank_session_location_from_service_user_home(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "sessions.csv").write_text(
+                "\n".join(
+                    [
+                        "booking_id,child_id,booking_date,booking_start_time,booking_finish_time,lead_sw_id,2to1_required,car,recurring",
+                        "booking-home,su-brook,10/07/2026,14:00,16:00,worker-lane,false,false,false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-location-backfill")
+            result = load_standardized_csv(output_dir)
+
+            service_user = result.state.service_users["su-brook"]
+            session = result.state.sessions["booking-home"]
+            self.assertEqual(service_user.home_location.postcode, session.location.postcode)
+            self.assertEqual(service_user.home_location.area, session.location.area)
 
     def test_ad_hoc_recurrence_expands_only_when_explicit(self):
         with tempfile.TemporaryDirectory() as temp_dir:

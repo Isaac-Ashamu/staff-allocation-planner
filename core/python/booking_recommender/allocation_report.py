@@ -267,6 +267,7 @@ def planning_state_to_dict(state: PlanningState) -> dict:
             "min_travel_buffer_minutes": state.tenant_rules.min_travel_buffer_minutes,
             "max_planned_travel_minutes": state.tenant_rules.max_planned_travel_minutes,
             "require_human_approval": state.tenant_rules.require_human_approval,
+            "allow_missing_worker_availability": state.tenant_rules.allow_missing_worker_availability,
             "scoring_weights": dict(state.tenant_rules.scoring_weights),
         },
         "decision_time": state.decision_time.isoformat(),

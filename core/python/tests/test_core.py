@@ -182,6 +182,29 @@ class BookingRecommenderCoreTests(unittest.TestCase):
             walk_recommendation.hard_constraint_failures,
         )
 
+    def test_missing_worker_availability_blocks_by_default(self):
+        worker_without_availability = replace(self.worker, availability=())
+        state = replace(self.state, workers={"worker-1": worker_without_availability})
+
+        recommendation = score_assign_action(
+            state,
+            AssignAction("worker-1", "session-1", "lead"),
+            FixedTravelEstimator(mode=TravelMode.DRIVE),
+        )
+
+        self.assertIn("missing_worker_availability", recommendation.hard_constraint_failures)
+
+        opt_in_state = replace(
+            state,
+            tenant_rules=replace(state.tenant_rules, allow_missing_worker_availability=True),
+        )
+        opt_in = score_assign_action(
+            opt_in_state,
+            AssignAction("worker-1", "session-1", "lead"),
+            FixedTravelEstimator(mode=TravelMode.DRIVE),
+        )
+        self.assertNotIn("missing_worker_availability", opt_in.hard_constraint_failures)
+
     def test_assignment_transition_ignores_duplicate_unknown_and_full_actions(self):
         action = AssignAction("worker-1", "session-1", "lead")
         assigned_state = apply_assign_action(self.state, action)

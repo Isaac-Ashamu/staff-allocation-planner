@@ -30,6 +30,7 @@ class TenantRules:
     min_travel_buffer_minutes: int = 15
     max_planned_travel_minutes: int = 90
     require_human_approval: bool = True
+    allow_missing_worker_availability: bool = False
     scoring_weights: Mapping[str, float] = field(
         default_factory=lambda: {
             "explicit_compatible": 40.0,

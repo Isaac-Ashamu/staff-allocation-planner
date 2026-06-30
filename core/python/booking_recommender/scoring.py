@@ -209,7 +209,9 @@ def _hard_constraint_failures(
     if compatibility and compatibility.status == "inappropriate":
         failures.append("explicitly marked inappropriate for this service user")
 
-    if not _is_available(worker, session):
+    if not worker.availability and not state.tenant_rules.allow_missing_worker_availability:
+        failures.append("missing_worker_availability")
+    elif not _is_available(worker, session):
         failures.append("worker is not available for the full session")
 
     if service_user.required_skills.difference(worker.skills):

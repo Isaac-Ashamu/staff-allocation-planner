@@ -198,13 +198,16 @@ def convert_workbook_sources(
     _warn_duplicate_names(service_user_rows, "service_users", issues)
     service_user_lookup = _lookup(service_user_rows, "service_user_id", "name")
     _apply_aliases(service_user_lookup, alias_config.get("service_user_aliases"), "service_users", issues)
+    service_users_by_id = {row["service_user_id"]: row for row in service_user_rows}
 
     session_rows = _sessions(
         source_tables.get("sessions", ()),
         worker_lookup,
         service_user_lookup,
+        service_users_by_id,
         issues,
     )
+    session_rows = _deduplicate_sessions(session_rows, issues)
     availability_rows = _availability(source_tables.get("availability", ()), worker_lookup, issues)
     compatibility_rows = _compatibility(
         source_tables.get("compatibility", ()),
@@ -538,65 +541,23 @@ def _augment_workers_from_session_notes(
     session_rows: Iterable[Mapping[str, str]],
     issues: list[AdapterIssue],
 ) -> list[dict[str, str]]:
-    augmented = list(worker_rows)
-    lookup = _lookup(augmented, "worker_id", "name")
-    seen_ids = {row["worker_id"] for row in augmented}
-    generated_by_id: dict[str, str] = {}
+    lookup = _lookup(worker_rows, "worker_id", "name")
     for row_number, row in enumerate(session_rows, start=2):
         for value, note in _session_worker_value_notes(row):
             if not note:
                 continue
             if _resolve_reference_text(note, lookup, issues, "sessions", row_number, "assigned_worker_ids", warn=False):
                 continue
-            worker_id = value.strip() or _stable_id("worker", note)
-            if worker_id in seen_ids:
-                if generated_by_id.get(worker_id) and _norm_name(generated_by_id[worker_id]) != _norm_name(note):
-                    _add_issue(
-                        issues,
-                        "warning",
-                        "conflicting_import_sheet_worker_note",
-                        f"SW ID {worker_id} has conflicting note names: {generated_by_id[worker_id]} / {note}",
-                        "sessions",
-                        row_number,
-                        "assigned_worker_ids",
-                    )
-                continue
-            seen_ids.add(worker_id)
-            generated_by_id[worker_id] = note
-            augmented.append(
-                {
-                    "worker_id": worker_id,
-                    "name": note,
-                    "gender": "",
-                    "home_label": "",
-                    "home_postcode": "",
-                    "home_latitude": "",
-                    "home_longitude": "",
-                    "home_area": "",
-                    "travel_modes": "public_transport|walk",
-                    "has_car": "false",
-                    "skills": "",
-                    "languages": "",
-                    "willing_areas": "",
-                    "current_hours": "0",
-                    "max_hours": "",
-                    "preference_tags": "",
-                    "reliability_score": "",
-                    "source_ref": _source_ref("sessions", row_number),
-                }
-            )
-            lookup[_norm_name(worker_id)] = worker_id
-            lookup[_norm_name(note)] = worker_id
             _add_issue(
                 issues,
                 "warning",
-                "worker_created_from_import_sheet_note",
-                f"created placeholder worker {worker_id} from import-sheet SW note",
+                "unresolved_import_sheet_worker_note",
+                f"import-sheet worker note could not be resolved to a staff record: {note}",
                 "sessions",
                 row_number,
                 "assigned_worker_ids",
             )
-    return augmented
+    return worker_rows
 
 
 def _add_session_worker_aliases(
@@ -747,6 +708,7 @@ def _sessions(
     rows: Iterable[Mapping[str, str]],
     worker_lookup: Mapping[str, str],
     service_user_lookup: Mapping[str, str],
+    service_users_by_id: Mapping[str, Mapping[str, str]],
     issues: list[AdapterIssue],
 ) -> list[dict[str, str]]:
     output = []
@@ -785,17 +747,18 @@ def _sessions(
                 _add_issue(issues, "error", "duplicate_session_id", f"duplicate session id {session_id}", "sessions", row_number, "session_id")
                 continue
             seen.add(session_id)
+            location = _session_location_fields(row, service_users_by_id.get(service_user_id))
             output.append(
                 {
                     "session_id": session_id,
                     "service_user_id": service_user_id,
                     "start": occurrence_start,
                     "end": occurrence_end,
-                    "location_label": _value(row, "location", "venue"),
-                    "location_postcode": _value(row, "postcode", "location_postcode"),
-                    "location_latitude": "",
-                    "location_longitude": "",
-                    "location_area": _area(_value(row, "area", "location_area", "postcode", "location_postcode")),
+                    "location_label": location["label"],
+                    "location_postcode": location["postcode"],
+                    "location_latitude": location["latitude"],
+                    "location_longitude": location["longitude"],
+                    "location_area": location["area"],
                     "required_worker_count": str(required_count),
                     "assigned_worker_ids": "|".join(assigned_ids),
                     "assigned_roles": "|".join(_roles(len(assigned_ids))),
@@ -808,6 +771,225 @@ def _sessions(
                 }
             )
     return output
+
+
+def _session_location_fields(
+    row: Mapping[str, str],
+    service_user_row: Mapping[str, str] | None,
+) -> dict[str, str]:
+    explicit = {
+        "label": _value(row, "location", "venue", "location_label"),
+        "postcode": _postcode(_value(row, "location_postcode", "postcode")),
+        "latitude": _value(row, "location_latitude"),
+        "longitude": _value(row, "location_longitude"),
+        "area": _area(_value(row, "area", "location_area", "postcode", "location_postcode")),
+    }
+    if any(explicit.values()) or not service_user_row:
+        return explicit
+    return {
+        "label": service_user_row.get("home_label", ""),
+        "postcode": service_user_row.get("home_postcode", ""),
+        "latitude": service_user_row.get("home_latitude", ""),
+        "longitude": service_user_row.get("home_longitude", ""),
+        "area": service_user_row.get("home_area", ""),
+    }
+
+
+def _deduplicate_sessions(
+    rows: Iterable[Mapping[str, str]],
+    issues: list[AdapterIssue],
+) -> list[dict[str, str]]:
+    merged: dict[tuple[str, str, str], dict[str, str]] = {}
+    order: list[tuple[str, str, str]] = []
+    for row in rows:
+        start = _canonical_datetime_text(row["start"])
+        end = _canonical_datetime_text(row["end"])
+        key = (row["service_user_id"], start, end)
+        normalized = dict(row)
+        normalized["start"] = start
+        normalized["end"] = end
+        if key not in merged:
+            merged[key] = normalized
+            order.append(key)
+            continue
+        _merge_duplicate_session(merged[key], normalized, issues)
+    return [merged[key] for key in order]
+
+
+def _merge_duplicate_session(
+    target: dict[str, str],
+    duplicate: Mapping[str, str],
+    issues: list[AdapterIssue],
+) -> None:
+    source_refs = _merge_pipe_values(target.get("source_ref", ""), duplicate.get("source_ref", ""))
+    _add_issue(
+        issues,
+        "warning",
+        "duplicate_logical_session_merged",
+        (
+            "merged duplicate session rows for "
+            f"{target['service_user_id']} {target['start']} - {target['end']}: {source_refs}"
+        ),
+        "sessions",
+        None,
+        "session_id",
+    )
+
+    for field in (
+        "location_label",
+        "location_postcode",
+        "location_latitude",
+        "location_longitude",
+        "location_area",
+    ):
+        _merge_prefer_existing_location(target, duplicate, field, issues)
+
+    for field in ("required_worker_count", "requires_driver", "priority", "travel_buffer_before_minutes", "travel_buffer_after_minutes"):
+        if target.get(field, "") != duplicate.get(field, "") and target.get(field) and duplicate.get(field):
+            _add_issue(
+                issues,
+                "warning",
+                "duplicate_session_detail_conflict",
+                f"duplicate session rows disagree on {field}: {target.get(field)} / {duplicate.get(field)}",
+                "sessions",
+                None,
+                field,
+            )
+
+    assigned_ids, assigned_roles = _merge_assignments(
+        target.get("assigned_worker_ids", ""),
+        target.get("assigned_roles", ""),
+        duplicate.get("assigned_worker_ids", ""),
+        duplicate.get("assigned_roles", ""),
+        issues,
+    )
+    required_count = max(
+        _int_or_default(target.get("required_worker_count", ""), 1),
+        _int_or_default(duplicate.get("required_worker_count", ""), 1),
+        len(assigned_ids),
+    )
+    target["required_worker_count"] = str(required_count)
+    target["assigned_worker_ids"] = "|".join(assigned_ids)
+    target["assigned_roles"] = "|".join(assigned_roles)
+    target["requires_driver"] = "true" if target.get("requires_driver") == "true" or duplicate.get("requires_driver") == "true" else "false"
+    target["priority"] = _max_decimal_text(target.get("priority", ""), duplicate.get("priority", ""))
+    target["status"] = _merged_session_status(target.get("status", ""), duplicate.get("status", ""), assigned_ids, required_count, issues)
+    target["source_ref"] = source_refs
+
+
+def _merge_prefer_existing_location(
+    target: dict[str, str],
+    duplicate: Mapping[str, str],
+    field: str,
+    issues: list[AdapterIssue],
+) -> None:
+    existing = target.get(field, "")
+    incoming = duplicate.get(field, "")
+    if not existing and incoming:
+        target[field] = incoming
+        return
+    if existing and incoming and existing != incoming:
+        _add_issue(
+            issues,
+            "warning",
+            "duplicate_session_detail_conflict",
+            f"duplicate session rows disagree on {field}: {existing} / {incoming}",
+            "sessions",
+            None,
+            field,
+        )
+
+
+def _merge_assignments(
+    left_ids_text: str,
+    left_roles_text: str,
+    right_ids_text: str,
+    right_roles_text: str,
+    issues: list[AdapterIssue],
+) -> tuple[list[str], list[str]]:
+    assigned: dict[str, str] = {}
+    for worker_id, role in _assignment_pairs(left_ids_text, left_roles_text) + _assignment_pairs(right_ids_text, right_roles_text):
+        if worker_id in assigned:
+            if assigned[worker_id] != role:
+                _add_issue(
+                    issues,
+                    "warning",
+                    "duplicate_session_detail_conflict",
+                    f"duplicate session rows assign {worker_id} with conflicting roles: {assigned[worker_id]} / {role}",
+                    "sessions",
+                    None,
+                    "assigned_roles",
+                )
+            continue
+        assigned[worker_id] = role
+    worker_ids = list(assigned)
+    roles = list(assigned.values())
+    if len(worker_ids) > 1 and len(set(roles)) < len(roles):
+        roles = _roles(len(worker_ids))
+    return worker_ids, roles
+
+
+def _assignment_pairs(ids_text: str, roles_text: str) -> list[tuple[str, str]]:
+    worker_ids = _split(ids_text)
+    roles = _split(roles_text)
+    if len(roles) < len(worker_ids):
+        roles.extend(_roles(len(worker_ids))[len(roles) :])
+    return [(worker_id, roles[index] if index < len(roles) else "lead") for index, worker_id in enumerate(worker_ids)]
+
+
+def _merged_session_status(
+    left: str,
+    right: str,
+    assigned_ids: list[str],
+    required_count: int,
+    issues: list[AdapterIssue],
+) -> str:
+    if left and right and left != right:
+        _add_issue(
+            issues,
+            "warning",
+            "duplicate_session_detail_conflict",
+            f"duplicate session rows disagree on status: {left} / {right}",
+            "sessions",
+            None,
+            "status",
+        )
+    terminal = {"cancelled", "rejected", "confirmed"}
+    if left == right and left in terminal:
+        return left
+    return _status("", assigned_ids, required_count)
+
+
+def _canonical_datetime_text(value: str) -> str:
+    return _parse_datetime_text(value).isoformat()
+
+
+def _merge_pipe_values(*values: str) -> str:
+    merged: list[str] = []
+    for value in values:
+        for item in _split(value):
+            if item not in merged:
+                merged.append(item)
+    return "|".join(merged)
+
+
+def _int_or_default(value: str, default: int) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _max_decimal_text(left: str, right: str) -> str:
+    values = []
+    for value in (left, right):
+        try:
+            values.append(float(value))
+        except (TypeError, ValueError):
+            pass
+    if not values:
+        return left or right
+    return str(max(values))
 
 
 def _availability(
@@ -1803,6 +1985,12 @@ def _name_lookup_keys(value: str) -> tuple[str, ...]:
     without_parentheses = re.sub(r"\([^)]*\)", " ", value)
     keys.append(_norm_name(without_parentheses))
     keys.append(_norm_name(re.sub(r"\((?:P|NR|DRIVER)\)", " ", value, flags=re.IGNORECASE)))
+    nickname_match = re.match(r"\s*(?P<first>[A-Za-z'-]+)\s+\((?P<nickname>[^)]+)\)\s+(?P<rest>.+?)\s*$", value)
+    if nickname_match:
+        nickname = nickname_match.group("nickname")
+        rest = nickname_match.group("rest")
+        keys.append(_norm_name(f"{nickname} {rest}"))
+        keys.append(_norm_name(f"{nickname_match.group('first')} {rest}"))
     return tuple(dict.fromkeys(key for key in keys if key))
 
 
