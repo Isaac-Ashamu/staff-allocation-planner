@@ -661,6 +661,262 @@ def build_default_travel_providers(
     return providers
 
 
+class PostcodeGeocodeCache(Protocol):
+    def get(self, postcode: str) -> Location | None:
+        ...
+
+    def set(self, postcode: str, location: Location | None) -> None:
+        ...
+
+
+class InMemoryPostcodeGeocodeCache:
+    def __init__(self) -> None:
+        self._entries: dict[str, Location | None] = {}
+        self.hits = 0
+
+    def get(self, postcode: str) -> Location | None:
+        key = normalize_postcode(postcode) or postcode
+        if key in self._entries:
+            self.hits += 1
+        return self._entries.get(key)
+
+    def set(self, postcode: str, location: Location | None) -> None:
+        self._entries[normalize_postcode(postcode) or postcode] = location
+
+    def __contains__(self, postcode: str) -> bool:
+        return (normalize_postcode(postcode) or postcode) in self._entries
+
+
+class SQLitePostcodeGeocodeCache:
+    """Persistent postcode -> coordinate cache.
+
+    Worker and service-user home postcodes barely change month to month, so a
+    geocode done once is reused on every later planning run. Unresolvable
+    postcodes are cached as misses so a typo does not cost a request per run.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._initialize()
+
+    def get(self, postcode: str) -> Location | None:
+        key = normalize_postcode(postcode) or postcode
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT resolved, latitude, longitude, area FROM postcode_geocode_cache WHERE postcode = ?",
+                (key,),
+            ).fetchone()
+        if row is None or not row["resolved"]:
+            return None
+        return Location(label=key, postcode=key, latitude=row["latitude"], longitude=row["longitude"], area=row["area"])
+
+    def __contains__(self, postcode: str) -> bool:
+        key = normalize_postcode(postcode) or postcode
+        with self._connect() as connection:
+            row = connection.execute("SELECT 1 FROM postcode_geocode_cache WHERE postcode = ?", (key,)).fetchone()
+        return row is not None
+
+    def set(self, postcode: str, location: Location | None) -> None:
+        key = normalize_postcode(postcode) or postcode
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO postcode_geocode_cache (postcode, resolved, latitude, longitude, area, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(postcode) DO UPDATE SET
+                    resolved = excluded.resolved,
+                    latitude = excluded.latitude,
+                    longitude = excluded.longitude,
+                    area = excluded.area,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    key,
+                    1 if location is not None else 0,
+                    location.latitude if location else None,
+                    location.longitude if location else None,
+                    location.area if location else None,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            connection.commit()
+
+    def _initialize(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS postcode_geocode_cache (
+                    postcode TEXT PRIMARY KEY,
+                    resolved INTEGER NOT NULL,
+                    latitude REAL,
+                    longitude REAL,
+                    area TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.commit()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(str(self.path))
+        connection.row_factory = sqlite3.Row
+        return connection
+
+
+class PostcodesIoGeocoder:
+    """UK postcode geocoder backed by the free, keyless postcodes.io API.
+
+    Resolves a postcode to WGS84 coordinates plus the postcode area so the
+    routing providers (which need coordinates) can run. Results are cached, and
+    ``prefetch`` resolves many postcodes in bulk requests of up to 100 so a whole
+    roster costs a handful of calls rather than one per worker.
+    """
+
+    name = "postcodes_io"
+    BULK_LIMIT = 100
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "https://api.postcodes.io",
+        cache: PostcodeGeocodeCache | None = None,
+        config: TravelConfig | None = None,
+        stats: TravelRunStats | None = None,
+        enabled: bool = True,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.cache = cache if cache is not None else InMemoryPostcodeGeocodeCache()
+        self.config = config or TravelConfig()
+        self.stats = stats
+        self.enabled = enabled
+        self.lookups = 0
+
+    def resolve(self, postcode: str) -> Location | None:
+        key = normalize_postcode(postcode)
+        if not key:
+            return None
+        if key in self.cache:
+            return self.cache.get(key)
+        if not self.enabled:
+            return None
+        self.prefetch([key])
+        return self.cache.get(key)
+
+    def prefetch(self, postcodes: Iterable[str]) -> dict[str, Location | None]:
+        """Resolve many postcodes with bulk requests; only uncached ones hit the API."""
+        wanted: list[str] = []
+        seen: set[str] = set()
+        for raw in postcodes:
+            key = normalize_postcode(raw)
+            if key and key not in seen and key not in self.cache:
+                seen.add(key)
+                wanted.append(key)
+        resolved: dict[str, Location | None] = {}
+        if not self.enabled:
+            return resolved
+        for start in range(0, len(wanted), self.BULK_LIMIT):
+            batch = wanted[start : start + self.BULK_LIMIT]
+            request = urllib.request.Request(
+                f"{self.base_url}/postcodes",
+                data=json.dumps({"postcodes": batch}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            self.lookups += 1
+            data = _request_json_with_retries(request, config=self.config)
+            answered: set[str] = set()
+            for item in data.get("result") or []:
+                query = normalize_postcode(str(item.get("query") or ""))
+                result = item.get("result") or None
+                location = _location_from_postcodes_io(query, result) if result else None
+                if query:
+                    answered.add(query)
+                    self.cache.set(query, location)
+                    resolved[query] = location
+            for key in batch:
+                if key not in answered:
+                    self.cache.set(key, None)
+                    resolved[key] = None
+        return resolved
+
+
+def _location_from_postcodes_io(postcode: str, result: Mapping[str, object]) -> Location | None:
+    latitude = result.get("latitude")
+    longitude = result.get("longitude")
+    if latitude is None or longitude is None:
+        return None
+    outcode = str(result.get("outcode") or "").strip()
+    return Location(
+        label=postcode,
+        postcode=postcode,
+        latitude=float(latitude),
+        longitude=float(longitude),
+        area=outcode or None,
+    )
+
+
+def live_travel_config_from_env(base: TravelConfig | None = None) -> TravelConfig:
+    """Enable whichever routing providers the environment has credentials for.
+
+    Provider order becomes cache -> configured live providers -> postcode distance
+    -> fallback, so a provider outage degrades to an approximation instead of
+    failing the planning run.
+    """
+    resolved = base or TravelConfig()
+    live: list[str] = []
+    if os.environ.get(resolved.ors_api_key_env):
+        live.append("openrouteservice")
+    if os.environ.get(resolved.osrm_base_url_env):
+        live.append("osrm")
+    order = ("cache", *live, "postcode_distance", "fallback")
+    return replace(resolved, enable_external_travel=bool(live), travel_provider_order=order)
+
+
+def build_live_travel_estimator(
+    *,
+    tenant_id: str,
+    travel_cache_db: str | Path | None = None,
+    geocode_cache_db: str | Path | None = None,
+    config: TravelConfig | None = None,
+    stats: TravelRunStats | None = None,
+    geocoder: PostcodeGeocoder | None = None,
+) -> CachedTravelEstimator:
+    """Production wiring: live routing (if credentials are set), live geocoding, persistent caches."""
+    resolved = live_travel_config_from_env(config)
+    run_stats = stats or TravelRunStats()
+    travel_cache: TravelEstimateCache = (
+        SQLiteTravelEstimateCache(travel_cache_db) if travel_cache_db else InMemoryTravelEstimateCache()
+    )
+    if geocoder is None:
+        geocode_cache: PostcodeGeocodeCache = (
+            SQLitePostcodeGeocodeCache(geocode_cache_db) if geocode_cache_db else InMemoryPostcodeGeocodeCache()
+        )
+        geocoder = PostcodesIoGeocoder(cache=geocode_cache, config=resolved, stats=run_stats)
+    return CachedTravelEstimator(
+        tenant_id=tenant_id,
+        cache=travel_cache,
+        geocoder=geocoder,
+        config=resolved,
+        stats=run_stats,
+    )
+
+
+def prefetch_state_postcodes(state, geocoder: PostcodeGeocoder) -> int:
+    """Bulk-geocode every worker home and session location before planning starts."""
+    prefetch = getattr(geocoder, "prefetch", None)
+    if prefetch is None:
+        return 0
+    postcodes: list[str] = []
+    for worker in state.workers.values():
+        if worker.home_location and worker.home_location.postcode:
+            postcodes.append(worker.home_location.postcode)
+    for session in state.sessions.values():
+        if session.location and session.location.postcode:
+            postcodes.append(session.location.postcode)
+    return len(prefetch(postcodes))
+
+
 def fallback_estimate(
     *,
     origin: Location,

@@ -23,6 +23,7 @@ from .allocation_report import (
     allocation_report_to_dict,
     build_allocation_report,
 )
+from .allocation_cli import add_live_travel_arguments, build_travel_estimator_from_args
 from .importer import StandardizedImportError, load_standardized_csv
 from .persistence import (
     PersistenceError,
@@ -47,6 +48,7 @@ def prepare_review_run(
     tenant_id: str | None = None,
     top_n: int = 5,
     include_infeasible: bool = True,
+    travel_estimator=None,
 ) -> PreparedReviewRun:
     """Load source data, build a proposed plan, and persist it for review."""
 
@@ -55,7 +57,7 @@ def prepare_review_run(
         source_folder=source_folder,
         state=import_result.state,
         import_report=import_result.report,
-        travel_estimator=FallbackTravelEstimator(),
+        travel_estimator=travel_estimator or FallbackTravelEstimator(),
         top_n=top_n,
         include_infeasible=include_infeasible,
         compare_single_session=True,
@@ -357,15 +359,21 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="Hide hard-failed candidates from the generated review run.",
     )
+    add_live_travel_arguments(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
+        travel_estimator = None
+        if args.live_travel:
+            import_result = load_standardized_csv(args.folder)
+            travel_estimator, _ = build_travel_estimator_from_args(args, import_result.state)
         prepared = prepare_review_run(
             args.folder,
             audit_db=args.audit_db,
             tenant_id=args.tenant_id,
             top_n=max(1, args.top_n),
             include_infeasible=not args.feasible_only,
+            travel_estimator=travel_estimator,
         )
     except StandardizedImportError as error:
         print("Standardized CSV import failed")

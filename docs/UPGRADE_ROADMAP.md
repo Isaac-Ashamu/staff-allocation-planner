@@ -69,11 +69,18 @@ Outputs:
 
 ## Phase 3: Travel-Time Service
 
-Status: provider/cache foundation implemented with offline defaults; external
-providers require tenant deployment configuration before use.
+Status: wired end to end (September 2026). `allocate-sessions --live-travel`
+and `review-ui --live-travel` geocode every worker home and session postcode
+through postcodes.io (free, keyless, bulk lookups of 100) and route through
+OpenRouteService when `ORS_API_KEY` is set or self-hosted OSRM when
+`OSRM_BASE_URL` is set. Provider order is cache -> live providers ->
+postcode distance -> fallback, so an outage degrades to an approximation
+rather than failing the run. `--travel-cache-db` persists both the travel
+estimates and the geocodes between monthly runs. Off by default: without the
+flag nothing calls an external service.
 
-Travel should come back after the standardized importer and allocation planner
-are stable.
+Remaining: a live public-transport provider (the GTFS stub is still a stub), and
+Google Routes if a tenant wants it over OpenRouteService.
 
 Provider options:
 
@@ -99,6 +106,11 @@ Implemented foundation:
 - In-memory and SQLite travel caches.
 - Offline fallback and postcode-distance providers.
 - Guarded OpenRouteService and OSRM providers, disabled unless configured.
+- postcodes.io geocoder with in-memory and SQLite geocode caches (misses cached
+  too, so a mistyped postcode costs one request, not one per run).
+- `live_travel_config_from_env` / `build_live_travel_estimator` assembly and the
+  `--live-travel` / `--travel-cache-db` CLI flags; postcodes are bulk-prefetched
+  before planning starts.
 - Google Routes later-stage provider stub, disabled by default with explicit
   opt-in and cost-control configuration.
 - GTFS-ready public transport provider stub for future TfGM/GTFS/TXC schedule

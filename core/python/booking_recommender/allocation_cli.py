@@ -14,6 +14,7 @@ from .allocation_report import (
 )
 from .importer import StandardizedImportError, load_standardized_csv
 from .persistence import persist_allocation_report
+from .travel import TravelRunStats, build_live_travel_estimator, prefetch_state_postcodes
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -44,6 +45,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--tenant-id",
         help="Optional tenant ID override for audit persistence. Defaults to tenant rules from the import.",
     )
+    add_live_travel_arguments(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
@@ -54,10 +56,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(f"- {issue.severity}:{issue.code}: {issue.message}")
         return 1
 
+    travel_estimator, travel_stats = build_travel_estimator_from_args(args, import_result.state)
+
     report = build_allocation_report(
         source_folder=args.folder,
         state=import_result.state,
         import_report=import_result.report,
+        travel_estimator=travel_estimator,
         top_n=max(1, args.top_n),
         include_infeasible=args.include_infeasible,
         compare_single_session=args.compare_single_session,
@@ -67,6 +72,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     written = write_allocation_outputs(report, rendered, output_dir)
 
     print(rendered, end="")
+    if travel_stats is not None:
+        print(render_travel_stats(travel_stats))
     print(f"Saved derived outputs to {output_dir}")
     for path in written:
         print(f"- {path.name}")
@@ -99,6 +106,52 @@ def write_allocation_outputs(report, rendered: str, output_dir: Path) -> tuple[P
     text_path.write_text(rendered, encoding="utf-8")
     written.append(text_path)
     return tuple(written)
+
+
+def add_live_travel_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--live-travel",
+        action="store_true",
+        help=(
+            "Geocode postcodes via postcodes.io and route with OpenRouteService (ORS_API_KEY) or "
+            "OSRM (OSRM_BASE_URL). Without credentials this still geocodes and uses postcode distance. "
+            "Off by default so planning never calls external services unless asked."
+        ),
+    )
+    parser.add_argument(
+        "--travel-cache-db",
+        help="SQLite file for persistent travel-estimate and postcode-geocode caches (used with --live-travel).",
+    )
+
+
+def build_travel_estimator_from_args(args: argparse.Namespace, state):
+    """Return (estimator, stats). Both None when --live-travel is not set (deterministic fallback)."""
+    if not getattr(args, "live_travel", False):
+        return None, None
+    stats = TravelRunStats()
+    tenant_id = getattr(args, "tenant_id", None) or state.tenant_rules.tenant_id
+    cache_db = getattr(args, "travel_cache_db", None)
+    estimator = build_live_travel_estimator(
+        tenant_id=tenant_id,
+        travel_cache_db=cache_db,
+        geocode_cache_db=cache_db,
+        stats=stats,
+    )
+    prefetched = prefetch_state_postcodes(state, estimator.geocoder)
+    order = ", ".join(estimator.config.travel_provider_order)
+    print(f"Live travel enabled: provider order {order}; geocoded {prefetched} new postcodes")
+    return estimator, stats
+
+
+def render_travel_stats(stats: TravelRunStats) -> str:
+    counts = stats.to_dict()
+    live = counts["estimates_from_ors"] + counts["estimates_from_osrm"] + counts["estimates_from_google"]
+    return (
+        "Travel estimates: "
+        f"{live} live routed, {counts['estimates_from_postcode_distance']} postcode-distance, "
+        f"{counts['estimates_from_fallback']} fallback, {counts['estimates_from_cache']} cached, "
+        f"{counts['provider_failures']} provider failures, {counts['external_route_calls']} external calls"
+    )
 
 
 def _output_dir(value: str | None, source_folder: str, report) -> Path:

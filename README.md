@@ -22,7 +22,8 @@ Current foundation:
 Deferred until the standardized importer works:
 
 - Raw company-specific spreadsheet/email/PDF adapters.
-- Travel provider integrations.
+- Public-transport travel provider (drive/cycle/walk routing is now wired in;
+  see "Live travel" below).
 - Review dashboard or web UI.
 - Feedback, incident, illness, and profile ingestion.
 
@@ -97,6 +98,32 @@ Travel estimates:
 Driving and public transport should be estimated separately. A worker who drives
 may be excellent for spread-out sessions, while a bus-only worker may be better
 for dense Manchester routes or sessions near their home/college.
+
+## Live travel
+
+Planning runs are offline and deterministic by default. Add `--live-travel` to
+`allocate-sessions` or `review-ui` to:
+
+1. geocode every worker home and session postcode through postcodes.io
+   (free, no key; bulk requests of up to 100 postcodes, cached), and
+2. route with OpenRouteService if `ORS_API_KEY` is set (free tier:
+   https://openrouteservice.org/dev/#/signup), or self-hosted OSRM if
+   `OSRM_BASE_URL` is set.
+
+Without routing credentials the run still geocodes and falls back to
+coordinate-based postcode distance, which is already far better than the
+20-minute default. Provider failures degrade to the next provider and are
+recorded in the travel stats printed at the end of the run.
+
+```powershell
+$env:ORS_API_KEY = "..."
+allocate-sessions .\standardized --live-travel --travel-cache-db .\cache\travel.sqlite
+```
+
+`--travel-cache-db` keeps both travel estimates (keyed by tenant, origin,
+destination, mode, day type and half-hour bucket) and geocodes between runs, so
+a monthly cycle re-routes only new worker/session pairs. Real postcodes never
+need to enter the repository: the cache file lives with the tenant data.
 
 ## Current Scoring Direction
 
