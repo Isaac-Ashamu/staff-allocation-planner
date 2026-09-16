@@ -233,6 +233,7 @@ def render_allocation_report(report: AllocationReport) -> str:
         f"ORS {travel['estimates_from_ors']}, "
         f"OSRM {travel['estimates_from_osrm']}, "
         f"Google {travel['estimates_from_google']}, "
+        f"GTFS transit {travel['estimates_from_gtfs_transit']}, "
         f"provider failures {travel['provider_failures']}, "
         f"travel-infeasible candidates {travel['travel_infeasible_candidates']}"
     )
@@ -542,6 +543,7 @@ def _travel_report_summary(assignments) -> dict:
         "estimates_from_ors": 0,
         "estimates_from_osrm": 0,
         "estimates_from_google": 0,
+        "estimates_from_gtfs_transit": 0,
         "provider_failures": 0,
         "travel_infeasible_candidates": 0,
         "all_accepted_assignments_used_fallback": False,
@@ -565,6 +567,8 @@ def _travel_report_summary(assignments) -> dict:
                 counts["estimates_from_osrm"] += 1
             elif estimate.provider == "google_routes":
                 counts["estimates_from_google"] += 1
+            elif estimate.provider == "gtfs_transit":
+                counts["estimates_from_gtfs_transit"] += 1
             if any("travel provider" in warning and "failed" in warning for warning in recommendation.warnings):
                 counts["provider_failures"] += 1
             if any(_is_travel_failure(failure) for failure in recommendation.hard_constraint_failures):

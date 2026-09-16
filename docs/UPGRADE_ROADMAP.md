@@ -79,8 +79,19 @@ rather than failing the run. `--travel-cache-db` persists both the travel
 estimates and the geocodes between monthly runs. Off by default: without the
 flag nothing calls an external service.
 
-Remaining: a live public-transport provider (the GTFS stub is still a stub), and
-Google Routes if a tenant wants it over OpenRouteService.
+Status update (September 2026): a real GTFS static-feed provider now exists
+(`GtfsTransitProvider`), ported from an earlier unmerged prototype and adapted
+to the current provider-chain architecture. Direct and one-transfer journeys,
+walking access/egress, real service-calendar resolution (weekday pattern plus
+calendar_dates.txt exceptions). Enabled via `GTFS_FEED_PATH`; tested against
+TfGM's real feed at 53% pair coverage across a 70-postcode Manchester sample
+(the other 47% correctly found no same-day scheduled connection within the
+conservative one-transfer/45-minute-wait budget, and fall through to
+postcode-distance). No live disruption data, no multi-transfer search --
+those remain open.
+
+Remaining: multi-transfer journeys, live disruption/delay data, and Google
+Routes if a tenant wants it over OpenRouteService.
 
 Provider options:
 

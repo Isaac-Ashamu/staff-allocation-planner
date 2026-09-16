@@ -145,10 +145,15 @@ def build_travel_estimator_from_args(args: argparse.Namespace, state):
 
 def render_travel_stats(stats: TravelRunStats) -> str:
     counts = stats.to_dict()
-    live = counts["estimates_from_ors"] + counts["estimates_from_osrm"] + counts["estimates_from_google"]
+    live = (
+        counts["estimates_from_ors"] + counts["estimates_from_osrm"] + counts["estimates_from_google"]
+        + counts["estimates_from_gtfs_transit"]
+    )
     return (
         "Travel estimates: "
-        f"{live} live routed, {counts['estimates_from_postcode_distance']} postcode-distance, "
+        f"{live} live routed ({counts['estimates_from_ors']} ORS, {counts['estimates_from_osrm']} OSRM, "
+        f"{counts['estimates_from_gtfs_transit']} GTFS transit), "
+        f"{counts['estimates_from_postcode_distance']} postcode-distance, "
         f"{counts['estimates_from_fallback']} fallback, {counts['estimates_from_cache']} cached, "
         f"{counts['provider_failures']} provider failures, {counts['external_route_calls']} external calls"
     )

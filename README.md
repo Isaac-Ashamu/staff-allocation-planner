@@ -115,6 +115,16 @@ coordinate-based postcode distance, which is already far better than the
 20-minute default. Provider failures degrade to the next provider and are
 recorded in the travel stats printed at the end of the run.
 
+Set `GTFS_FEED_PATH` to a directory of standard GTFS files (or a `.zip`) to
+add scheduled bus/tram/train estimates for PUBLIC_TRANSPORT/BUS/TRAM/TRAIN
+workers -- direct journeys and one-transfer journeys with walking access and
+egress, no live disruption data. TfGM's feed is free, open data
+(https://tfgm.com). Loading a full feed (tens of millions of stop-time rows)
+costs a few seconds once per run, then every later query is instant. A GTFS
+feed only covers the service dates it was published for -- test against a
+date the feed's `calendar.txt`/`calendar_dates.txt` actually serves, not an
+arbitrary past date.
+
 ```powershell
 $env:ORS_API_KEY = "..."
 allocate-sessions .\standardized --live-travel --travel-cache-db .\cache\travel.sqlite

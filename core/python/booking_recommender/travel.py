@@ -74,6 +74,7 @@ class TravelConfig:
     enable_external_travel: bool = False
     ors_api_key_env: str = "ORS_API_KEY"
     osrm_base_url_env: str = "OSRM_BASE_URL"
+    gtfs_feed_path_env: str = "GTFS_FEED_PATH"
     google_maps_api_key_env: str = "GOOGLE_MAPS_API_KEY"
     enable_google_routes: bool = False
     max_external_route_calls_per_run: int = 100
@@ -92,6 +93,7 @@ class TravelRunStats:
     estimates_from_ors: int = 0
     estimates_from_osrm: int = 0
     estimates_from_google: int = 0
+    estimates_from_gtfs_transit: int = 0
     provider_failures: int = 0
     external_route_calls: int = 0
     matrix_elements: int = 0
@@ -109,6 +111,8 @@ class TravelRunStats:
             self.estimates_from_osrm += 1
         elif estimate.provider == "google_routes":
             self.estimates_from_google += 1
+        elif estimate.provider == "gtfs_transit":
+            self.estimates_from_gtfs_transit += 1
 
     def to_dict(self) -> dict:
         return {
@@ -118,6 +122,7 @@ class TravelRunStats:
             "estimates_from_ors": self.estimates_from_ors,
             "estimates_from_osrm": self.estimates_from_osrm,
             "estimates_from_google": self.estimates_from_google,
+            "estimates_from_gtfs_transit": self.estimates_from_gtfs_transit,
             "provider_failures": self.provider_failures,
             "external_route_calls": self.external_route_calls,
             "matrix_elements": self.matrix_elements,
@@ -648,6 +653,7 @@ def build_default_travel_providers(
     *,
     config: TravelConfig | None = None,
     stats: TravelRunStats | None = None,
+    gtfs_feed_path: str | None = None,
 ) -> dict[str, TravelProvider]:
     resolved = config or TravelConfig()
     providers: dict[str, TravelProvider] = {
@@ -658,6 +664,12 @@ def build_default_travel_providers(
     providers["openrouteservice"] = OpenRouteServiceProvider(config=resolved, stats=stats)
     providers["osrm"] = OSRMProvider(config=resolved, stats=stats)
     providers["google_routes"] = GoogleRoutesProvider(config=resolved, stats=stats)
+    # Imported lazily: gtfs_transit imports from this module, so a top-level
+    # import here would be circular.
+    from .gtfs_transit import GtfsTransitProvider
+
+    feed_path = gtfs_feed_path or os.environ.get(resolved.gtfs_feed_path_env)
+    providers["gtfs_transit"] = GtfsTransitProvider(gtfs_path=feed_path, config=resolved, stats=stats)
     return providers
 
 
@@ -865,6 +877,8 @@ def live_travel_config_from_env(base: TravelConfig | None = None) -> TravelConfi
     """
     resolved = base or TravelConfig()
     live: list[str] = []
+    if os.environ.get(resolved.gtfs_feed_path_env):
+        live.append("gtfs_transit")
     if os.environ.get(resolved.ors_api_key_env):
         live.append("openrouteservice")
     if os.environ.get(resolved.osrm_base_url_env):
