@@ -14,7 +14,7 @@ from .allocation_report import (
 )
 from .importer import StandardizedImportError, load_standardized_csv
 from .persistence import persist_allocation_report
-from .travel import TravelRunStats, build_live_travel_estimator, prefetch_state_postcodes
+from .travel import TravelConfig, TravelRunStats, build_live_travel_estimator, prefetch_state_postcodes
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -122,6 +122,14 @@ def add_live_travel_arguments(parser: argparse.ArgumentParser) -> None:
         "--travel-cache-db",
         help="SQLite file for persistent travel-estimate and postcode-geocode caches (used with --live-travel).",
     )
+    parser.add_argument(
+        "--max-external-route-calls",
+        type=int,
+        help=(
+            "Override the per-run cap on live routing API calls (default: 100). "
+            "Higher values consume more provider quota; only takes effect with --live-travel."
+        ),
+    )
 
 
 def build_travel_estimator_from_args(args: argparse.Namespace, state):
@@ -131,10 +139,15 @@ def build_travel_estimator_from_args(args: argparse.Namespace, state):
     stats = TravelRunStats()
     tenant_id = getattr(args, "tenant_id", None) or state.tenant_rules.tenant_id
     cache_db = getattr(args, "travel_cache_db", None)
+    config = None
+    max_calls = getattr(args, "max_external_route_calls", None)
+    if max_calls is not None:
+        config = TravelConfig(max_external_route_calls_per_run=max_calls)
     estimator = build_live_travel_estimator(
         tenant_id=tenant_id,
         travel_cache_db=cache_db,
         geocode_cache_db=cache_db,
+        config=config,
         stats=stats,
     )
     prefetched = prefetch_state_postcodes(state, estimator.geocoder)
