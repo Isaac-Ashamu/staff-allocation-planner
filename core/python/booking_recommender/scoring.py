@@ -145,6 +145,14 @@ def score_assign_action(
         components["continuity"] = value
         reasons.append("previous worker/service-user continuity")
 
+    plan_continuity_count = _plan_continuity_count(state, worker, session, service_user)
+    if plan_continuity_count:
+        plan_continuity_value = min(1.0, plan_continuity_count / 4.0)
+        components["plan_continuity"] = weights.get("plan_continuity", weights["continuity"]) * plan_continuity_value
+        reasons.append(
+            f"already supporting {service_user.name} on {plan_continuity_count} other session(s) in this plan"
+        )
+
     travel_value = _travel_fit_value(state, travel_estimate)
     components["travel_fit"] = weights["travel_fit"] * travel_value
     reasons.append(f"travel estimate {travel_estimate.minutes:.0f} minutes by {travel_estimate.mode.value}")
@@ -208,6 +216,13 @@ def _hard_constraint_failures(
     compatibility = state.compatibility.get((worker.id, service_user.id))
     if compatibility and compatibility.status == "inappropriate":
         failures.append("explicitly marked inappropriate for this service user")
+
+    if (
+        state.tenant_rules.restrict_male_workers_from_female_service_users
+        and worker.gender == "male"
+        and service_user.gender == "female"
+    ):
+        failures.append("tenant policy: male workers are not matched with female service users")
 
     if not worker.availability and not state.tenant_rules.allow_missing_worker_availability:
         failures.append("missing_worker_availability")
@@ -400,6 +415,27 @@ def _load_balance_value(worker: Worker) -> float:
     if worker.max_hours is None or worker.max_hours <= 0:
         return 0.5
     return max(0.0, 1.0 - (worker.current_hours / worker.max_hours))
+
+
+def _plan_continuity_count(
+    state: PlanningState,
+    worker: Worker,
+    session: Session,
+    service_user: ServiceUser,
+) -> int:
+    """Other sessions in the current plan/state already assigning this worker to this
+    service user -- a continuity signal independent of pair_history, which a tenant may
+    not populate at all. Catches both other imported/existing bookings and sessions
+    already accepted earlier in this same greedy run (chronological processing means
+    earlier weeks are already committed into `state` by the time later weeks are scored).
+    """
+    count = 0
+    for other in state.sessions.values():
+        if other.id == session.id or other.service_user_id != service_user.id:
+            continue
+        if any(allocation.worker_id == worker.id for allocation in other.assigned):
+            count += 1
+    return count
 
 
 def _confidence_value(value) -> float:

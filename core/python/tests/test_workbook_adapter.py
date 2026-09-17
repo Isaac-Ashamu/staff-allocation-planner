@@ -561,7 +561,7 @@ class WorkbookAdapterTests(unittest.TestCase):
                 ],
                 [window.start.isoformat() for window in requests[0].preferred_time_ranges],
             )
-            self.assertEqual(frozenset({4}), requests[0].preferred_days)
+            self.assertEqual((4,), requests[0].preferred_days)
 
     def test_adapter_reads_eml_date_requests_and_flags_msg_for_review(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -599,7 +599,7 @@ class WorkbookAdapterTests(unittest.TestCase):
                 if request.service_user_id == "su-cedar" and "worker-lane" in request.requested_worker_ids
             ]
             self.assertEqual(1, len(cedar_requests))
-            self.assertEqual(frozenset({4}), cedar_requests[0].preferred_days)
+            self.assertEqual((4,), cedar_requests[0].preferred_days)
 
     def test_adapter_merges_provider_workbooks_and_headerless_su_sheet(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -674,6 +674,55 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertEqual((worker.id,), tuple(allocation.worker_id for allocation in session.assigned))
             self.assertEqual(1, len(result.state.family_requests))
             self.assertEqual("2026-07-10T10:00:00+01:00", result.state.family_requests[0].preferred_time_ranges[0].start.isoformat())
+
+    def test_headerless_su_sheet_extracts_gender_instead_of_discarding_it(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            source_dir.mkdir()
+            _write_xlsx(
+                source_dir / "Staff and SU names and postcode.xlsx",
+                {
+                    "STAFF": [
+                        ["Support Worker", "Address", "Gender"],
+                        ["Nova Helper", "ZZ1 1ZZ", "Female"],
+                    ],
+                    # Real export shape: no header row, columns are
+                    # first name / surname / postcode / support level / gender.
+                    "SU": [
+                        ["River", "Young", "ZZ2 2ZZ", "2:1", "Female"],
+                        ["Lake", "Young", "ZZ3 3ZZ", "1:1", "Male"],
+                    ],
+                },
+            )
+            _write_xlsx(
+                source_dir / "booking-import.xlsx",
+                {
+                    "Bookings": [
+                        [
+                            "booking_id",
+                            "child_name",
+                            "booking_date",
+                            "booking_start_time",
+                            "booking_finish_time",
+                            "lead_sw_id",
+                            "2to1_required",
+                            "car",
+                            "recurring",
+                        ],
+                        ["booking-river", "River Young", "10/07/2026", "10:00", "12:00", "Nova Helper", "true", "true", "false"],
+                    ],
+                },
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-su-gender")
+            result = load_standardized_csv(output_dir)
+
+            self.assertFalse(report.errors)
+            river = next(item for item in result.state.service_users.values() if item.name == "River Young")
+            lake = next(item for item in result.state.service_users.values() if item.name == "Lake Young")
+            self.assertEqual("female", river.gender)
+            self.assertEqual("male", lake.gender)
 
     def test_adapter_flags_availability_report_pdfs_for_manual_export(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -750,6 +799,49 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertEqual("2026-07-17T08:00:00+01:00", moss_windows[2].start.isoformat())
             self.assertEqual(1, len(result.state.workers["worker-sage"].availability))
             self.assertEqual(5, report.row_counts["availability"])
+
+    def test_availability_report_pdfs_are_scoped_to_the_target_import_month(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "availability.csv").unlink()
+            (source_dir / "staff.csv").write_text(
+                "\n".join(
+                    [
+                        "staff_id,name,postcode,travel_modes,has_car,skills,willing_areas,current_hours,max_hours",
+                        "worker-lane,Lane Worker,AA1 1AA,drive,true,road_safety,AA1,0,20",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report_dir = source_dir / "availability report"
+            report_dir.mkdir()
+            # Sessions in this fixture are all July 2026 -- this report matches the target month.
+            _write_text_pdf(
+                report_dir / "July 2026.pdf",
+                ["Fri, 10", "Jul 2026", "Lane Worker YES NO"],
+            )
+            # A different month's report for a worker who has since left and is not in staff.csv
+            # at all -- without month scoping this produces an unresolved_name warning per row.
+            _write_text_pdf(
+                report_dir / "March 2026.pdf",
+                ["Tue, 10", "Mar 2026", "Departed Worker YES NO"],
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-availability-scoped")
+            result = load_standardized_csv(output_dir)
+
+            codes = {issue.code for issue in report.issues}
+            self.assertIn("availability_report_pdf_parsed", codes)
+            self.assertIn("availability_report_pdf_out_of_scope_month", codes)
+            self.assertNotIn(
+                "unresolved_name",
+                {issue.code for issue in report.warnings if "Departed Worker" in issue.message},
+            )
+            self.assertEqual(1, len(result.state.workers["worker-lane"].availability))
+            self.assertEqual(1, report.row_counts["availability"])
 
 
 def _file_hashes(folder: Path) -> dict[str, str]:

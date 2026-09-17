@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from booking_recommender.adapters.llm_ad_hoc_parser import (
+    DayPatternResult,
     GapRowResult,
     LlmAdHocParsingConfig,
     LlmCallLimitExceeded,
@@ -77,7 +78,7 @@ class LlmGapFillingTests(unittest.TestCase):
         result = GapRowResult(
             source_ref="row-2",
             resolved_service_user_id=None,
-            preferred_days=(5,),
+            day_patterns=(DayPatternResult(days=(5,), sessions_per_week=1),),
             exact_date_intervals=(),
             requested_workers=(
                 ResolvedPerson("Maya", "worker-maya", "high"),
@@ -105,7 +106,7 @@ class LlmGapFillingTests(unittest.TestCase):
         result = GapRowResult(
             source_ref="row-2",
             resolved_service_user_id="su-theo",
-            preferred_days=(5,),
+            day_patterns=(DayPatternResult(days=(5,), sessions_per_week=1),),
             exact_date_intervals=(),
             requested_workers=(),
             avoided_workers=(),
@@ -126,7 +127,7 @@ class LlmGapFillingTests(unittest.TestCase):
     def test_unrecovered_dropped_row_stays_dropped(self):
         rows = [_row(client_name="Totally Unknown Child", sessions_notes="6 hrs pw on a Sat TT")]
         result = GapRowResult(
-            source_ref="row-2", resolved_service_user_id=None, preferred_days=(),
+            source_ref="row-2", resolved_service_user_id=None, day_patterns=(),
             exact_date_intervals=(), requested_workers=(), avoided_workers=(), notes_addition="", note="",
         )
         resolver = StubResolver({"row-2": result})
@@ -148,11 +149,13 @@ class LlmGapFillingTests(unittest.TestCase):
         self.assertTrue(any(issue.code == "llm_call_limit_exceeded" for issue in issues))
 
     def test_either_or_pattern_becomes_a_family_request_not_extra_sessions(self):
-        # "Saturday or Sunday" -> both days as soft preferred_days, never mechanically
-        # expanded into concrete sessions -- ad hocs have no session-generation path at all.
+        # "Saturday or Sunday" -> both days as soft preferred_days on the family_requests.csv
+        # row (this test only covers the workbook adapter, not the separate downstream provisioning
+        # step, which is what actually decides whether/when a session gets created).
         rows = [_row(sessions_notes="4 hrs pw, Saturday or Sunday")]
         result = GapRowResult(
-            source_ref="row-2", resolved_service_user_id=None, preferred_days=(5, 6),
+            source_ref="row-2", resolved_service_user_id=None,
+            day_patterns=(DayPatternResult(days=(5, 6), sessions_per_week=1),),
             exact_date_intervals=(), requested_workers=(), avoided_workers=(),
             notes_addition="4 hours, Saturday or Sunday", note="",
         )
@@ -162,7 +165,34 @@ class LlmGapFillingTests(unittest.TestCase):
             worker_rows=WORKER_ROWS, service_user_rows=SERVICE_USER_ROWS, llm_resolver=resolver,
         )
         self.assertEqual(output[0]["preferred_days"], "5|6")
+        self.assertEqual(output[0]["preferred_day_patterns"], "5,6:1")
         self.assertEqual(output[0]["preferred_time_ranges"], "")
+
+    def test_midweek_plus_weekend_pattern_produces_two_day_groups(self):
+        # The real case this structure exists for: "1 midweek + 1 weekend session/week" is
+        # NOT one flat list of ~6 candidate days with sessions_per_week=2 (that could
+        # silently produce two midweek sessions and zero weekend ones) -- it's two
+        # independent groups, each guaranteeing its own slot every week.
+        rows = [_row(sessions_notes="1 midweek + 1 weekend session/week, 2x3hr, not Wednesdays")]
+        result = GapRowResult(
+            source_ref="row-2", resolved_service_user_id=None,
+            day_patterns=(
+                DayPatternResult(days=(0, 1, 3, 4), sessions_per_week=1),
+                DayPatternResult(days=(5, 6), sessions_per_week=1),
+            ),
+            exact_date_intervals=(), requested_workers=(), avoided_workers=(),
+            notes_addition="1 midweek + 1 weekend session/week, 2x3hr, not Wednesdays", note="",
+            target_session_duration_minutes=180,
+        )
+        resolver = StubResolver({"row-2": result})
+        output = _family_requests(
+            rows, WORKER_LOOKUP, SERVICE_USER_LOOKUP, [],
+            worker_rows=WORKER_ROWS, service_user_rows=SERVICE_USER_ROWS, llm_resolver=resolver,
+        )
+        self.assertEqual(output[0]["preferred_day_patterns"], "0,1,3,4:1|5,6:1")
+        self.assertEqual(output[0]["preferred_days"], "0|1|3|4|5|6")
+        self.assertEqual(output[0]["target_sessions_per_week"], "2")
+        self.assertEqual(output[0]["target_session_duration_minutes"], "180")
 
     def test_llm_resolver_none_leaves_behavior_unchanged(self):
         rows = [_row(sessions_notes="6 hrs pw on a Sat TT")]

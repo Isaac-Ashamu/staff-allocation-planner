@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable
 
@@ -14,7 +15,14 @@ from .allocation_report import (
 )
 from .importer import StandardizedImportError, load_standardized_csv
 from .persistence import persist_allocation_report
-from .travel import TravelConfig, TravelRunStats, build_live_travel_estimator, prefetch_state_postcodes
+from .provisioning import provision_sessions_from_family_requests
+from .travel import (
+    FallbackTravelEstimator,
+    TravelConfig,
+    TravelRunStats,
+    build_live_travel_estimator,
+    prefetch_state_postcodes,
+)
 
 
 def main(argv: Iterable[str] | None = None) -> int:
@@ -45,6 +53,23 @@ def main(argv: Iterable[str] | None = None) -> int:
         "--tenant-id",
         help="Optional tenant ID override for audit persistence. Defaults to tenant rules from the import.",
     )
+    parser.add_argument(
+        "--provision-from-family-requests",
+        action="store_true",
+        help=(
+            "Create sessions for family/ad hoc requests with no matching session in the period, when "
+            "at least one worker looks feasible for a candidate day/time. Off by default: without this "
+            "flag, unmatched requests stay inert preference data as they do today."
+        ),
+    )
+    parser.add_argument(
+        "--restrict-male-worker-female-service-user",
+        action="store_true",
+        help=(
+            "Tenant policy hard constraint: never suggest a male worker for a female service user. "
+            "Off by default -- this is a tenant-specific convention, not a universal rule."
+        ),
+    )
     add_live_travel_arguments(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -56,16 +81,34 @@ def main(argv: Iterable[str] | None = None) -> int:
             print(f"- {issue.severity}:{issue.code}: {issue.message}")
         return 1
 
-    travel_estimator, travel_stats = build_travel_estimator_from_args(args, import_result.state)
+    state = import_result.state
+    if args.restrict_male_worker_female_service_user:
+        state = replace(
+            state,
+            tenant_rules=replace(state.tenant_rules, restrict_male_workers_from_female_service_users=True),
+        )
+
+    travel_estimator, travel_stats = build_travel_estimator_from_args(args, state)
+
+    provisioning = None
+    if args.provision_from_family_requests:
+        provisioning = provision_sessions_from_family_requests(
+            state, travel_estimator or FallbackTravelEstimator()
+        )
+        print(
+            f"Provisioned {len(provisioning.created)} session(s) from family requests "
+            f"({len(provisioning.unscheduled)} request-week(s) could not be scheduled)"
+        )
 
     report = build_allocation_report(
         source_folder=args.folder,
-        state=import_result.state,
+        state=state,
         import_report=import_result.report,
         travel_estimator=travel_estimator,
         top_n=max(1, args.top_n),
         include_infeasible=args.include_infeasible,
         compare_single_session=args.compare_single_session,
+        provisioning=provisioning,
     )
     rendered = render_allocation_report(report)
     output_dir = _output_dir(args.output_dir, args.folder, report)

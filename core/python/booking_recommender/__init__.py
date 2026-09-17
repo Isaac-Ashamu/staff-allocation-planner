@@ -5,6 +5,7 @@ from .models import (
     AssignAction,
     AvailabilityWindow,
     Compatibility,
+    DayPattern,
     FamilyRequest,
     ImportAuditMetadata,
     Location,
@@ -27,6 +28,12 @@ from .events import (
 )
 from .planner import rank_session_candidates
 from .batch import GreedyPlan, PlannedAssignment, greedy_allocate_open_sessions
+from .provisioning import (
+    ProvisionedSession,
+    ProvisioningResult,
+    UnscheduledRequest,
+    provision_sessions_from_family_requests,
+)
 from .allocation_report import (
     AllocationReport,
     FallbackTravelEstimator,
@@ -105,6 +112,7 @@ __all__ = [
     "AvailabilityWindow",
     "Compatibility",
     "CachedTravelEstimator",
+    "DayPattern",
     "ExogenousEvent",
     "FamilyRequest",
     "FamilyRequestArrivedEvent",
@@ -125,6 +133,8 @@ __all__ = [
     "PersistenceError",
     "PlannedAssignment",
     "PlanningState",
+    "ProvisionedSession",
+    "ProvisioningResult",
     "PostcodeGeocoder",
     "prefetch_state_postcodes",
     "live_travel_config_from_env",
@@ -154,6 +164,7 @@ __all__ = [
     "TravelProvider",
     "TravelProviderError",
     "TravelRunStats",
+    "UnscheduledRequest",
     "Worker",
     "WorkerUnavailableEvent",
     "allocation_report_to_dict",
@@ -173,6 +184,7 @@ __all__ = [
     "persist_allocation_report",
     "postcode_area",
     "preferred_mode",
+    "provision_sessions_from_family_requests",
     "rank_session_candidates",
     "recommendations_for_import_run",
     "recommendations_for_service_user",

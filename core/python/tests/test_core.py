@@ -117,6 +117,50 @@ class BookingRecommenderCoreTests(unittest.TestCase):
         self.assertIn("travel_fit", recommendation.components)
         self.assertTrue(any("travel estimate" in reason for reason in recommendation.reasons))
 
+    def test_plan_continuity_prefers_worker_already_on_other_sessions_for_the_same_service_user(self):
+        expanded_availability = self.worker.availability + (
+            AvailabilityWindow(self.start + timedelta(days=7), self.end + timedelta(days=7)),
+            AvailabilityWindow(self.start + timedelta(days=14), self.end + timedelta(days=14)),
+        )
+        worker_one = replace(self.worker, availability=expanded_availability)
+        worker_two = replace(self.second_worker, availability=expanded_availability)
+        other_session = replace(
+            self.session,
+            id="session-other",
+            start=self.start + timedelta(days=7),
+            end=self.end + timedelta(days=7),
+            assigned=(Allocation(worker_id="worker-1", role="lead"),),
+        )
+        new_session = replace(
+            self.session,
+            id="session-new",
+            start=self.start + timedelta(days=14),
+            end=self.end + timedelta(days=14),
+        )
+        state = replace(
+            self.state,
+            workers={"worker-1": worker_one, "worker-2": worker_two},
+            sessions={"session-other": other_session, "session-new": new_session},
+        )
+
+        continuity_recommendation = score_assign_action(
+            state,
+            AssignAction("worker-1", "session-new", "lead"),
+            FixedTravelEstimator(),
+        )
+        no_continuity_recommendation = score_assign_action(
+            state,
+            AssignAction("worker-2", "session-new", "lead"),
+            FixedTravelEstimator(),
+        )
+
+        self.assertIn("plan_continuity", continuity_recommendation.components)
+        self.assertTrue(
+            any("other session" in reason for reason in continuity_recommendation.reasons)
+        )
+        self.assertNotIn("plan_continuity", no_continuity_recommendation.components)
+        self.assertGreater(continuity_recommendation.score, no_continuity_recommendation.score)
+
     def test_unknown_ids_missing_service_user_and_full_sessions_are_inspectable(self):
         missing_worker = score_assign_action(
             self.state,
@@ -180,6 +224,50 @@ class BookingRecommenderCoreTests(unittest.TestCase):
         self.assertIn(
             "session requires a drive-capable route",
             walk_recommendation.hard_constraint_failures,
+        )
+
+    def test_male_worker_female_service_user_restriction_is_opt_in(self):
+        male_worker = replace(self.worker, gender="male")
+        female_service_user = replace(self.service_user, gender="female")
+        state = replace(
+            self.state,
+            workers={"worker-1": male_worker},
+            service_users={"su-1": female_service_user},
+        )
+
+        unrestricted = score_assign_action(
+            state,
+            AssignAction("worker-1", "session-1", "lead"),
+            FixedTravelEstimator(),
+        )
+        self.assertEqual((), unrestricted.hard_constraint_failures)
+
+        restricted_state = replace(
+            state,
+            tenant_rules=replace(state.tenant_rules, restrict_male_workers_from_female_service_users=True),
+        )
+        restricted = score_assign_action(
+            restricted_state,
+            AssignAction("worker-1", "session-1", "lead"),
+            FixedTravelEstimator(),
+        )
+        self.assertIn(
+            "tenant policy: male workers are not matched with female service users",
+            restricted.hard_constraint_failures,
+        )
+
+        female_worker_state = replace(
+            restricted_state,
+            workers={"worker-1": replace(male_worker, gender="female")},
+        )
+        female_worker_recommendation = score_assign_action(
+            female_worker_state,
+            AssignAction("worker-1", "session-1", "lead"),
+            FixedTravelEstimator(),
+        )
+        self.assertNotIn(
+            "tenant policy: male workers are not matched with female service users",
+            female_worker_recommendation.hard_constraint_failures,
         )
 
     def test_missing_worker_availability_blocks_by_default(self):

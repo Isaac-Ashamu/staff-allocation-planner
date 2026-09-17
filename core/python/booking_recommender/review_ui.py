@@ -11,7 +11,7 @@ import argparse
 import html
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable
@@ -25,6 +25,7 @@ from .allocation_report import (
 )
 from .allocation_cli import add_live_travel_arguments, build_travel_estimator_from_args
 from .importer import StandardizedImportError, load_standardized_csv
+from .provisioning import provision_sessions_from_family_requests
 from .persistence import (
     PersistenceError,
     initialize_database,
@@ -49,18 +50,31 @@ def prepare_review_run(
     top_n: int = 5,
     include_infeasible: bool = True,
     travel_estimator=None,
+    provision_from_family_requests: bool = False,
+    restrict_male_worker_female_service_user: bool = False,
 ) -> PreparedReviewRun:
     """Load source data, build a proposed plan, and persist it for review."""
 
     import_result = load_standardized_csv(source_folder)
+    state = import_result.state
+    if restrict_male_worker_female_service_user:
+        state = replace(
+            state,
+            tenant_rules=replace(state.tenant_rules, restrict_male_workers_from_female_service_users=True),
+        )
+    resolved_travel_estimator = travel_estimator or FallbackTravelEstimator()
+    provisioning = None
+    if provision_from_family_requests:
+        provisioning = provision_sessions_from_family_requests(state, resolved_travel_estimator)
     report = build_allocation_report(
         source_folder=source_folder,
-        state=import_result.state,
+        state=state,
         import_report=import_result.report,
-        travel_estimator=travel_estimator or FallbackTravelEstimator(),
+        travel_estimator=resolved_travel_estimator,
         top_n=top_n,
         include_infeasible=include_infeasible,
         compare_single_session=True,
+        provisioning=provisioning,
     )
     database_path = Path(audit_db)
     persisted = persist_allocation_report(database_path, report, tenant_id=tenant_id)
@@ -359,6 +373,22 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="Hide hard-failed candidates from the generated review run.",
     )
+    parser.add_argument(
+        "--provision-from-family-requests",
+        action="store_true",
+        help=(
+            "Create sessions for family/ad hoc requests with no matching session in the period, when "
+            "at least one worker looks feasible for a candidate day/time. Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--restrict-male-worker-female-service-user",
+        action="store_true",
+        help=(
+            "Tenant policy hard constraint: never suggest a male worker for a female service user. "
+            "Off by default -- this is a tenant-specific convention, not a universal rule."
+        ),
+    )
     add_live_travel_arguments(parser)
     args = parser.parse_args(list(argv) if argv is not None else None)
 
@@ -374,6 +404,8 @@ def main(argv: Iterable[str] | None = None) -> int:
             top_n=max(1, args.top_n),
             include_infeasible=not args.feasible_only,
             travel_estimator=travel_estimator,
+            provision_from_family_requests=args.provision_from_family_requests,
+            restrict_male_worker_female_service_user=args.restrict_male_worker_female_service_user,
         )
     except StandardizedImportError as error:
         print("Standardized CSV import failed")

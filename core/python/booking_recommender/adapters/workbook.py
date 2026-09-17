@@ -15,6 +15,7 @@ import json
 import posixpath
 import re
 import zipfile
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from email import policy
@@ -108,6 +109,11 @@ STANDARD_TABLE_HEADERS = {
         "preferred_time_ranges",
         "unavailable_time_ranges",
         "notes",
+        "target_sessions_per_week",
+        "target_session_duration_minutes",
+        "preferred_time_window_start",
+        "preferred_time_window_end",
+        "preferred_day_patterns",
         "source_ref",
     ],
     "pair_history.csv": [
@@ -219,7 +225,18 @@ def convert_workbook_sources(
         issues,
     )
     session_rows = _deduplicate_sessions(session_rows, issues)
-    availability_rows = _availability(source_tables.get("availability", ()), worker_lookup, issues)
+    target_month = _target_month_from_sessions(session_rows)
+    availability_report_rows = _read_availability_report_pdfs(source_path, issues, target_month=target_month)
+    combined_availability_rows = tuple(source_tables.get("availability", ())) + tuple(availability_report_rows)
+    if not combined_availability_rows:
+        _add_issue(
+            issues,
+            "warning",
+            "missing_availability_source",
+            "missing availability source; workers may be treated as generally available",
+            SOURCE_FILES["availability"],
+        )
+    availability_rows = _availability(combined_availability_rows, worker_lookup, issues)
     compatibility_rows = _compatibility(
         source_tables.get("compatibility", ()),
         worker_lookup,
@@ -372,9 +389,6 @@ def _read_source_tables(
     request_rows = _read_request_files(source_dir, issues)
     if request_rows:
         tables["family_requests"] = tuple(tables.get("family_requests", ())) + tuple(request_rows)
-    availability_report_rows = _read_availability_report_pdfs(source_dir, issues)
-    if availability_report_rows:
-        tables["availability"] = tuple(tables.get("availability", ())) + tuple(availability_report_rows)
 
     for required_key in ("workers", "service_users", "sessions"):
         if not tables.get(required_key):
@@ -385,14 +399,8 @@ def _read_source_tables(
                 f"missing required source table: {required_key}",
                 SOURCE_FILES[required_key],
             )
-    if not tables.get("availability"):
-        _add_issue(
-            issues,
-            "warning",
-            "missing_availability_source",
-            "missing availability source; workers may be treated as generally available",
-            SOURCE_FILES["availability"],
-        )
+    # Availability report PDFs are read later, in convert_workbook_sources, once the target
+    # import month is known from parsed session dates -- see _read_availability_report_pdfs.
     return tables
 
 
@@ -1230,10 +1238,31 @@ def _merge_llm_result(
     if result.note:
         _add_issue(issues, "warning", "llm_flagged_ambiguity", result.note, "family_requests", row_number)
 
-    preferred_days = "|".join(str(day) for day in sorted(result.preferred_days))
+    # Preserve the LLM's priority order (most preferred first) -- do not sort
+    # numerically, that would discard "Sunday preferred, Saturday fallback".
+    # preferred_days/target_sessions_per_week are the flattened, backward-compatible
+    # view for display; preferred_day_patterns (see docs/NORMALIZED_DATA_CONTRACT.md)
+    # is the source of truth a planner should use, since it keeps independent day
+    # groups (e.g. "1 midweek + 1 weekend") separate instead of merging them into one
+    # list a flat count can't correctly consume.
+    flattened_days: list[int] = []
+    for pattern in result.day_patterns:
+        flattened_days.extend(pattern.days)
+    preferred_days = "|".join(str(day) for day in dict.fromkeys(flattened_days))
+    total_sessions_per_week = sum(pattern.sessions_per_week for pattern in result.day_patterns)
+    preferred_day_patterns = "|".join(
+        f"{','.join(str(day) for day in dict.fromkeys(pattern.days))}:{pattern.sessions_per_week}"
+        for pattern in result.day_patterns
+    )
     preferred_time_ranges = "|".join(result.exact_date_intervals)
     notes_parts = [value for value in (gap.get("notes"), result.notes_addition) if value]
     notes = " | ".join(dict.fromkeys(notes_parts))
+    target_sessions_per_week = str(total_sessions_per_week) if total_sessions_per_week else ""
+    target_session_duration_minutes = (
+        str(result.target_session_duration_minutes) if result.target_session_duration_minutes else ""
+    )
+    preferred_time_window_start = result.preferred_time_window_start or ""
+    preferred_time_window_end = result.preferred_time_window_end or ""
 
     if gap["dropped"]:
         if not result.resolved_service_user_id:
@@ -1249,6 +1278,11 @@ def _merge_llm_result(
                 "preferred_time_ranges": preferred_time_ranges,
                 "unavailable_time_ranges": "",
                 "notes": notes,
+                "target_sessions_per_week": target_sessions_per_week,
+                "target_session_duration_minutes": target_session_duration_minutes,
+                "preferred_time_window_start": preferred_time_window_start,
+                "preferred_time_window_end": preferred_time_window_end,
+                "preferred_day_patterns": preferred_day_patterns,
                 "source_ref": _source_ref("family_requests", row_number),
             }
         )
@@ -1270,6 +1304,16 @@ def _merge_llm_result(
                 row["requested_worker_ids"] = "|".join(dict.fromkeys([*_split(row["requested_worker_ids"]), *high_confidence_requested]))
             if high_confidence_avoided:
                 row["avoided_worker_ids"] = "|".join(dict.fromkeys([*_split(row["avoided_worker_ids"]), *high_confidence_avoided]))
+            if target_sessions_per_week:
+                row["target_sessions_per_week"] = target_sessions_per_week
+            if target_session_duration_minutes:
+                row["target_session_duration_minutes"] = target_session_duration_minutes
+            if preferred_time_window_start:
+                row["preferred_time_window_start"] = preferred_time_window_start
+            if preferred_time_window_end:
+                row["preferred_time_window_end"] = preferred_time_window_end
+            if preferred_day_patterns:
+                row["preferred_day_patterns"] = preferred_day_patterns
     _add_issue(
         issues, "info", "llm_assisted_family_request",
         "LLM-assisted parsing filled in day/time details the deterministic parser could not extract",
@@ -1595,7 +1639,25 @@ def _request_file_row(path: Path, issues: list[AdapterIssue]) -> dict[str, str]:
     }
 
 
-def _read_availability_report_pdfs(source_dir: Path, issues: list[AdapterIssue]) -> list[dict[str, str]]:
+def _read_availability_report_pdfs(
+    source_dir: Path,
+    issues: list[AdapterIssue],
+    *,
+    target_month: tuple[int, int] | None = None,
+) -> list[dict[str, str]]:
+    """Parse availability report PDFs found under ``source_dir``.
+
+    A tenant's ``availability report/`` archive typically holds one PDF per
+    month, but nothing stops every month's report from being discovered in
+    the same run (they all match "availability" in their path). Without
+    scoping, rows for staff who simply aren't on the *current* roster --
+    because the report is for a different month than the one being imported
+    -- generate an unresolved-name warning per row, which can dwarf the
+    genuine warning count for the actual target month. When ``target_month``
+    is given (as an inferred ``(year, month)`` from the parsed session
+    dates), rows outside it are excluded before name resolution ever runs,
+    so they cost nothing but one summary line per skipped PDF.
+    """
     rows: list[dict[str, str]] = []
     for path in sorted(source_dir.rglob("*.pdf")):
         if "availability" not in _norm_name(str(path)):
@@ -1620,15 +1682,58 @@ def _read_availability_report_pdfs(source_dir: Path, issues: list[AdapterIssue])
                 str(path),
             )
             continue
-        rows.extend(parsed_rows)
+        in_scope_rows = (
+            [row for row in parsed_rows if _row_year_month(row) == target_month]
+            if target_month is not None
+            else parsed_rows
+        )
+        if not in_scope_rows:
+            _add_issue(
+                issues,
+                "info",
+                "availability_report_pdf_out_of_scope_month",
+                (
+                    f"availability report PDF parsed {len(parsed_rows)} rows, all outside the "
+                    f"target import month {target_month[0]:04d}-{target_month[1]:02d}; excluded"
+                ),
+                str(path),
+            )
+            continue
+        rows.extend(in_scope_rows)
+        scope_note = (
+            f" ({len(in_scope_rows)} of {len(parsed_rows)}, scoped to target month)"
+            if len(in_scope_rows) != len(parsed_rows)
+            else ""
+        )
         _add_issue(
             issues,
             "info",
             "availability_report_pdf_parsed",
-            f"availability report PDF parsed into {len(parsed_rows)} availability windows",
+            f"availability report PDF parsed into {len(in_scope_rows)} availability windows{scope_note}",
             str(path),
         )
     return rows
+
+
+def _row_year_month(row: Mapping[str, str]) -> tuple[int, int] | None:
+    start = row.get("start", "")
+    if len(start) < 7 or start[4] != "-":
+        return None
+    try:
+        return int(start[:4]), int(start[5:7])
+    except ValueError:
+        return None
+
+
+def _target_month_from_sessions(session_rows: Iterable[Mapping[str, str]]) -> tuple[int, int] | None:
+    months: Counter[tuple[int, int]] = Counter()
+    for row in session_rows:
+        year_month = _row_year_month(row)
+        if year_month is not None:
+            months[year_month] += 1
+    if not months:
+        return None
+    return months.most_common(1)[0][0]
 
 
 def _pdf_text(path: Path, issues: list[AdapterIssue]) -> str:
@@ -1977,6 +2082,7 @@ def _headerless_service_user_rows(rows: tuple[dict[str, str], ...]) -> list[dict
         if not values:
             continue
         postcode = next((_postcode(value) for value in values if _postcode(value)), "")
+        gender = next((_gender_text(value) for value in values if _norm_name(value) in {"male", "female"}), "")
         name_parts = []
         for value in values:
             if _postcode(value) or _truthy_2_to_1(value) or _norm_name(value) in {"male", "female"}:
@@ -1991,6 +2097,7 @@ def _headerless_service_user_rows(rows: tuple[dict[str, str], ...]) -> list[dict
             {
                 "name": name,
                 "postcode": postcode,
+                "gender": gender,
                 "required_worker_count": "2" if any(_truthy_2_to_1(value) for value in values) else "1",
                 "support_level": "2_to_1" if any(_truthy_2_to_1(value) for value in values) else "standard",
             }

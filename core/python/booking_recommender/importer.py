@@ -11,7 +11,7 @@ import argparse
 import csv
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -19,6 +19,7 @@ from .models import (
     Allocation,
     AvailabilityWindow,
     Compatibility,
+    DayPattern,
     FamilyRequest,
     ImportAuditMetadata,
     Location,
@@ -471,16 +472,25 @@ def _parse_family_requests(rows, import_run_id: str, workers, service_users, iss
         avoided = frozenset(_list(row.get("avoided_worker_ids", "")))
         _warn_unknown_ids(issues, requested, workers, "unknown_requested_worker", "family_requests", row, "requested_worker_ids")
         _warn_unknown_ids(issues, avoided, workers, "unknown_avoided_worker", "family_requests", row, "avoided_worker_ids")
+        target_sessions_per_week = _optional_int(row, "target_sessions_per_week", "family_requests", issues, minimum=1)
+        target_session_duration_minutes = _optional_int(
+            row, "target_session_duration_minutes", "family_requests", issues, minimum=1
+        )
         requests.append(
             FamilyRequest(
                 id=request_id,
                 service_user_id=service_user_id,
                 requested_worker_ids=requested,
                 avoided_worker_ids=avoided,
-                preferred_days=frozenset(_preferred_days(row, issues)),
+                preferred_days=tuple(dict.fromkeys(_preferred_days(row, issues))),
                 preferred_time_ranges=tuple(_intervals(row, "preferred_time_ranges", "family_requests", issues)),
                 unavailable_windows=tuple(_intervals(row, "unavailable_time_ranges", "family_requests", issues)),
                 notes=row.get("notes", ""),
+                target_sessions_per_week=target_sessions_per_week,
+                target_session_duration_minutes=target_session_duration_minutes,
+                preferred_time_window_start=_optional_time(row, "preferred_time_window_start", "family_requests", issues),
+                preferred_time_window_end=_optional_time(row, "preferred_time_window_end", "family_requests", issues),
+                day_patterns=_parse_day_patterns(row, "family_requests", issues),
                 source_ref=row.get("source_ref") or None,
                 source_reference=_source(import_run_id, "family_requests", row, _row_number(row)),
             )
@@ -734,6 +744,18 @@ def _positive_int(row, field: str, table: str, issues: list[ImportIssue], minimu
     return parsed
 
 
+def _optional_time(row, field: str, table: str, issues: list[ImportIssue]) -> time | None:
+    value = row.get(field, "")
+    if not value:
+        return None
+    try:
+        hour_text, minute_text = value.split(":", maxsplit=1)
+        return time(int(hour_text), int(minute_text))
+    except ValueError:
+        _add_row_issue(issues, "error", "invalid_time", f"{field} must be HH:MM", table, row, field)
+        return None
+
+
 def _optional_datetime(row, field: str, table: str, issues: list[ImportIssue]) -> datetime | None:
     value = row.get(field, "")
     if not value:
@@ -769,6 +791,53 @@ def _preferred_days(row, issues: list[ImportIssue]) -> tuple[int, ...]:
             continue
         days.append(day)
     return tuple(days)
+
+
+def _parse_day_patterns(row, table: str, issues: list[ImportIssue]) -> tuple[DayPattern, ...]:
+    value = row.get("preferred_day_patterns", "")
+    if not value:
+        return ()
+    patterns: list[DayPattern] = []
+    for group_text in value.split("|"):
+        group_text = group_text.strip()
+        if not group_text:
+            continue
+        if ":" not in group_text:
+            _add_row_issue(
+                issues, "error", "invalid_day_pattern",
+                f"preferred_day_patterns group must be 'day,day,...:count': {group_text}",
+                table, row, "preferred_day_patterns",
+            )
+            continue
+        days_text, count_text = group_text.rsplit(":", 1)
+        try:
+            count = int(count_text)
+        except ValueError:
+            _add_row_issue(issues, "error", "invalid_day_pattern", f"preferred_day_patterns count must be an integer: {count_text}", table, row, "preferred_day_patterns")
+            continue
+        if count < 1:
+            _add_row_issue(issues, "error", "invalid_day_pattern", f"preferred_day_patterns count must be >= 1: {count}", table, row, "preferred_day_patterns")
+            continue
+        days: list[int] = []
+        valid = True
+        for day_text in days_text.split(","):
+            day_text = day_text.strip()
+            if not day_text:
+                continue
+            try:
+                day = int(day_text)
+            except ValueError:
+                _add_row_issue(issues, "error", "invalid_day_pattern", f"preferred_day_patterns day must be an integer: {day_text}", table, row, "preferred_day_patterns")
+                valid = False
+                continue
+            if day not in range(7):
+                _add_row_issue(issues, "error", "invalid_day_pattern", f"preferred_day_patterns day must be 0..6: {day}", table, row, "preferred_day_patterns")
+                valid = False
+                continue
+            days.append(day)
+        if valid and days:
+            patterns.append(DayPattern(days=tuple(dict.fromkeys(days)), sessions_per_week=count))
+    return tuple(patterns)
 
 
 def _intervals(row, field: str, table: str, issues: list[ImportIssue]) -> tuple[AvailabilityWindow, ...]:

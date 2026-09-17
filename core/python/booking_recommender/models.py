@@ -8,7 +8,7 @@ into these objects before scoring or optimization runs.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, time
 from enum import Enum
 from typing import Mapping, Sequence
 
@@ -31,11 +31,13 @@ class TenantRules:
     max_planned_travel_minutes: int = 90
     require_human_approval: bool = True
     allow_missing_worker_availability: bool = False
+    restrict_male_workers_from_female_service_users: bool = False
     scoring_weights: Mapping[str, float] = field(
         default_factory=lambda: {
             "explicit_compatible": 40.0,
             "family_requested": 35.0,
             "continuity": 25.0,
+            "plan_continuity": 20.0,
             "travel_fit": 25.0,
             "postcode_area_match": 8.0,
             "skill_risk_fit": 20.0,
@@ -167,15 +169,39 @@ class PairHistory:
 
 
 @dataclass(frozen=True)
+class DayPattern:
+    """One independent day-selection group within a family request.
+
+    ``days`` is priority order (most preferred first) within this group only.
+    A request with more than one ``DayPattern`` needs a fixed number of
+    sessions from *each* group independently -- e.g. "1 midweek + 1 weekend
+    session/week" is two groups, not one flat list of 4-5 candidate days,
+    because a single ranked list can express "most preferred single day" but
+    not "one from category A and one from category B every week."
+    """
+
+    days: tuple[int, ...]  # weekday 0=Mon..6=Sun, priority order, most preferred first
+    sessions_per_week: int
+
+
+@dataclass(frozen=True)
 class FamilyRequest:
     id: str
     service_user_id: str
     requested_worker_ids: frozenset[str] = frozenset()
     avoided_worker_ids: frozenset[str] = frozenset()
-    preferred_days: frozenset[int] = frozenset()
+    preferred_days: tuple[int, ...] = ()  # weekday 0=Mon..6=Sun, priority order, most preferred first
     preferred_time_ranges: tuple[AvailabilityWindow, ...] = ()
     unavailable_windows: tuple[AvailabilityWindow, ...] = ()
     notes: str = ""
+    target_sessions_per_week: int | None = None
+    target_session_duration_minutes: int | None = None
+    preferred_time_window_start: time | None = None
+    preferred_time_window_end: time | None = None
+    # Richer alternative to preferred_days/target_sessions_per_week for requests that need
+    # independent day-category groups (see DayPattern). Empty means the flat pair above
+    # fully describes the request; when non-empty, a planner should prefer this instead.
+    day_patterns: tuple[DayPattern, ...] = ()
     source_ref: str | None = None
     source_reference: SourceReference | None = None
 

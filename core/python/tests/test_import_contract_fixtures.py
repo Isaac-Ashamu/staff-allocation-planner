@@ -90,6 +90,11 @@ EXPECTED_HEADERS = {
         "preferred_time_ranges",
         "unavailable_time_ranges",
         "notes",
+        "target_sessions_per_week",
+        "target_session_duration_minutes",
+        "preferred_time_window_start",
+        "preferred_time_window_end",
+        "preferred_day_patterns",
         "source_ref",
     ],
     "pair_history.csv": [

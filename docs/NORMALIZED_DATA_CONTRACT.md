@@ -84,7 +84,10 @@ Dates and times:
 - Naive date-times are invalid.
 - End times are exclusive for overlap checks and must be after start times.
 - `preferred_days` uses Python weekday integers: `0` Monday through `6`
-  Sunday.
+  Sunday. Order is significant: list days most preferred first. A planner
+  provisioning a session from this list tries them in the given order, not
+  numeric order, so `5|6` and `6|5` are different requests (Saturday
+  preferred vs. Sunday preferred).
 - Time ranges use `start/end` ISO 8601 intervals. Lists of intervals are
   pipe-separated.
 
@@ -104,6 +107,13 @@ Gender:
   hard or soft scoring rule; gender-based constraints or preferences must be
   represented explicitly in future policy/request fields and surfaced for human
   review.
+- One such explicit, opt-in policy exists today:
+  `TenantRules.restrict_male_workers_from_female_service_users` (off by
+  default; enabled via `--restrict-male-worker-female-service-user` on
+  `allocate-sessions`/`review-ui`) is a hard constraint that blocks male
+  workers from being suggested for female service users. It is a
+  tenant-specific convention, not a universal rule, and every session it
+  blocks a candidate for still shows the reason in the report.
 
 Booleans and numbers:
 
@@ -296,11 +306,25 @@ File: `family_requests.csv`
 | `service_user_id` | service-user ID | required | Must exist in `service_users.csv`. |
 | `requested_worker_ids` | list worker ID | optional | Unknown worker IDs are warnings unless tenant policy requires errors. |
 | `avoided_worker_ids` | list worker ID | optional | Unknown worker IDs are warnings unless tenant policy requires errors. |
-| `preferred_days` | list integer 0..6 | optional | `0` Monday through `6` Sunday. |
+| `preferred_days` | list integer 0..6 | optional | `0` Monday through `6` Sunday. Order is priority order, most preferred first. |
 | `preferred_time_ranges` | list ISO interval | optional | Maps to `FamilyRequest.preferred_time_ranges`. |
 | `unavailable_time_ranges` | list ISO interval | optional | Maps to `FamilyRequest.unavailable_windows`. |
 | `notes` | string | optional | Do not store unnecessary personal detail in standardized fixtures. |
+| `target_sessions_per_week` | integer >= 1 | optional | How many sessions per week this request implies. Empty means there is not enough structure to provision a session from this request. Ignored when `preferred_day_patterns` is present. |
+| `target_session_duration_minutes` | integer > 0 | optional | Typical session length implied by the request, shared across every group in `preferred_day_patterns` when present. Required for the request to be provisionable. |
+| `preferred_time_window_start` | `HH:MM` local clock time | optional | Earliest acceptable session start time of day. Empty with an end time present means "no earlier than end of day minus duration". |
+| `preferred_time_window_end` | `HH:MM` local clock time | optional | Latest acceptable session end time of day. Empty with a start time present means "no later than start of day plus duration". |
+| `preferred_day_patterns` | list of `day,day,...:count` groups | optional | Richer alternative to `preferred_days`/`target_sessions_per_week` for requests needing independent day-category groups. Groups are pipe-separated; within a group, days are comma-separated in priority order (most preferred first) followed by `:` and how many sessions/week come from that group. Example: `0,1,3,4:1\|5,6:1` means 1 session/week from {Mon,Tue,Thu,Fri} (in that priority order) plus 1 session/week from {Sat,Sun} -- "1 midweek + 1 weekend session/week", which a single flat `preferred_days` list cannot express (it can only rank one combined list, not enforce one pick from each of two groups). When present, a planner should use this instead of the flat `preferred_days`/`target_sessions_per_week` pair. |
 | `source_ref` | string | optional | Human-readable source row/object reference. |
+
+`target_sessions_per_week`, `target_session_duration_minutes`,
+`preferred_time_window_*`, and `preferred_day_patterns` exist so a planner can
+provision a concrete session from a request that has no matching session yet,
+instead of the request sitting as inert preference data. Every group in
+`preferred_day_patterns` shares the same `target_session_duration_minutes` and
+time window -- mixed-duration patterns (for example "1x6hr plus 2x3hr
+sessions") and term-time-vs-holiday variants are still not represented here
+and should be flagged for human review via `notes` instead of guessed.
 
 ### Import Manifest
 

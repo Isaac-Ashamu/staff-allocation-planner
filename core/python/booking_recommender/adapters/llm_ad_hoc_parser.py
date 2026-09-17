@@ -76,15 +76,24 @@ class ResolvedPerson:
 
 
 @dataclass(frozen=True)
+class DayPatternResult:
+    days: tuple[int, ...]
+    sessions_per_week: int
+
+
+@dataclass(frozen=True)
 class GapRowResult:
     source_ref: str
     resolved_service_user_id: str | None
-    preferred_days: tuple[int, ...]
+    day_patterns: tuple[DayPatternResult, ...]
     exact_date_intervals: tuple[str, ...]
     requested_workers: tuple[ResolvedPerson, ...]
     avoided_workers: tuple[ResolvedPerson, ...]
     notes_addition: str
     note: str
+    target_session_duration_minutes: int | None = None
+    preferred_time_window_start: str | None = None
+    preferred_time_window_end: str | None = None
 
 
 _CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
@@ -107,24 +116,48 @@ _ROW_RESULT_JSON_SCHEMA = {
                 "required": [
                     "source_ref",
                     "resolved_service_user_id",
-                    "day_selection",
-                    "day_candidates",
+                    "day_patterns",
                     "exact_date",
                     "requested_workers",
                     "avoided_workers",
                     "notes_addition",
                     "note",
+                    "target_session_duration_minutes",
+                    "preferred_time_window_start",
+                    "preferred_time_window_end",
                 ],
                 "properties": {
                     "source_ref": {"type": "string"},
                     "resolved_service_user_id": {"type": ["string", "null"]},
-                    "day_selection": {
-                        "type": "string",
-                        "enum": ["fixed_all_listed", "pick_n_by_priority", "not_applicable"],
-                    },
-                    "day_candidates": {
+                    "day_patterns": {
                         "type": "array",
-                        "items": {"type": "string", "enum": list(_WEEKDAYS)},
+                        "description": (
+                            "Independent day-selection groups. Almost always exactly ONE group -- only use "
+                            "more than one when the note requires a fixed count from each of several distinct "
+                            "day pools every week, e.g. '1 midweek + 1 weekend session/week' is two groups: "
+                            "{days: [the midweek days in play], sessions_per_week: 1} and "
+                            "{days: [\"saturday\",\"sunday\"], sessions_per_week: 1}. A plain 'Saturday preferred, "
+                            "Sunday fallback, 1 session/week' is ONE group: "
+                            "{days: [\"saturday\",\"sunday\"], sessions_per_week: 1} -- do not split a simple "
+                            "priority list into multiple single-day groups. Empty array if there is no usable "
+                            "day/count structure at all."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["days", "sessions_per_week"],
+                            "properties": {
+                                "days": {
+                                    "type": "array",
+                                    "items": {"type": "string", "enum": list(_WEEKDAYS)},
+                                    "description": "Ordered most preferred first within this group -- this order decides which day gets booked when more than one is feasible.",
+                                },
+                                "sessions_per_week": {
+                                    "type": "integer",
+                                    "description": "How many sessions/week come from this group specifically (not the request's total).",
+                                },
+                            },
+                        },
                     },
                     "exact_date": {"type": ["string", "null"], "description": "YYYY-MM-DD, only when a real single date was given"},
                     "requested_workers": {
@@ -161,6 +194,23 @@ _ROW_RESULT_JSON_SCHEMA = {
                         "type": "string",
                         "description": "At most one short sentence, only if there is a genuine ambiguity worth a human's attention. Empty otherwise.",
                     },
+                    "target_session_duration_minutes": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "Typical single-session length in minutes, shared by every group in day_patterns. "
+                            "Null if the note gives no usable duration, or genuinely mixes incompatible session "
+                            "lengths that one number can't represent (e.g. '1x6hr plus 2x3hr sessions') -- use "
+                            "'note' to flag that rather than picking an average or guessing."
+                        ),
+                    },
+                    "preferred_time_window_start": {
+                        "type": ["string", "null"],
+                        "description": "Earliest acceptable session start time of day, HH:MM 24-hour, only when the note gives a real time-of-day signal (e.g. 'not before 10.45am' -> '10:45'). Null if unspecified.",
+                    },
+                    "preferred_time_window_end": {
+                        "type": ["string", "null"],
+                        "description": "Latest acceptable session end time of day, HH:MM 24-hour, same rule as preferred_time_window_start. Null if unspecified.",
+                    },
                 },
             },
         }
@@ -172,14 +222,21 @@ _SYSTEM_INSTRUCTION = (
     "You convert a UK support-work booking company's raw ad hoc scheduling notes into "
     "structured records, for MANY rows at once. Process every row given and return exactly "
     "one result per input row, echoing its source_ref exactly.\n\n"
-    "CRITICAL: distinguish 'this happens on all of these days every week' (day_selection="
-    "fixed_all_listed) from 'pick one or more days per week from these options, not "
-    "necessarily every one of them' (day_selection=pick_n_by_priority). 'Saturday preferred, "
-    "Sunday if Saturday not possible' is pick_n_by_priority -- it is NOT both days every week. "
-    "'Any midweek day' as a holiday-only top-up on a weekend pattern is also "
-    "pick_n_by_priority, not every weekday. List every day that could plausibly be used in "
-    "day_candidates regardless of day_selection -- priority ordering is not tracked here, "
-    "only which days are genuinely in play.\n\n"
+    "CRITICAL: day_patterns is a list of independent day-selection groups, almost always "
+    "exactly one group. A single ranked list (one group) can express 'most preferred single "
+    "day' -- e.g. 'Saturday preferred, Sunday if Saturday not possible, 1 session/week' is "
+    "ONE group: {days: ['saturday','sunday'], sessions_per_week: 1}, days ordered most "
+    "preferred first since that order decides which day actually gets booked when both are "
+    "feasible. A single list CANNOT express 'one from category A and one from category B every "
+    "week' -- for that you need TWO groups. 'Not Wednesdays; 1 midweek + 1 weekend "
+    "session/week' is two groups: {days: [the midweek days in play, e.g. monday/tuesday/"
+    "thursday/friday], sessions_per_week: 1} and {days: ['saturday','sunday'], "
+    "sessions_per_week: 1} -- do NOT flatten this into one 4-6 day list with "
+    "sessions_per_week=2, that loses the 'one of each' requirement and can silently produce "
+    "two midweek sessions and zero weekend ones. Only split into multiple groups when the "
+    "note genuinely requires a fixed count from each of several distinct day pools; a plain "
+    "'Saturday or Sunday, 1 session/week' stays one group, never two single-day groups. Leave "
+    "day_patterns empty ([]) if the note gives no usable day/count structure at all.\n\n"
     "For every named person, resolve against the provided roster ONLY -- if a name does not "
     "clearly and confidently match, set resolved_id to null and confidence to low. Never "
     "invent an id not in the roster.\n\n"
@@ -195,7 +252,17 @@ _SYSTEM_INSTRUCTION = (
     "leave it null for recurring weekly patterns with no concrete date attached.\n\n"
     "Summarize the schedule (time window, duration, sessions/week) in notes_addition, one or "
     "two short sentences. Keep 'note' empty unless there's a genuine ambiguity worth a "
-    "human's attention -- most rows need no note at all."
+    "human's attention -- most rows need no note at all.\n\n"
+    "Also extract target_session_duration_minutes, shared across every group in day_patterns, "
+    "describing the session length a planner could book directly. Prefer the term-time "
+    "pattern when term-time and holiday patterns differ. Set it null when the note gives no "
+    "usable duration, or when it genuinely mixes incompatible session lengths that one number "
+    "can't represent (e.g. '1x6hr plus 2x3hr sessions') -- use 'note' to flag that rather than "
+    "picking an average. Extract preferred_time_window_start/end (HH:MM) only from a real "
+    "time-of-day signal in the note "
+    "(e.g. 'not before 10.45am', 'PM preferred' is NOT precise enough on its own -- leave null "
+    "unless an actual clock time or a standard band like 'morning'/'afternoon'/'evening' is "
+    "given, mapped to 09:00-12:00/12:00-17:00/17:00-20:00 respectively)."
 )
 
 
@@ -274,19 +341,28 @@ class AnthropicAdHocResolver:
 
 
 def _row_result_from_payload(item: dict) -> GapRowResult:
-    day_candidates = tuple(_WEEKDAYS.index(day) for day in item["day_candidates"])
+    day_patterns = tuple(
+        DayPatternResult(
+            days=tuple(_WEEKDAYS.index(day) for day in group["days"]),
+            sessions_per_week=int(group["sessions_per_week"]),
+        )
+        for group in item.get("day_patterns") or []
+    )
     exact_date_intervals: tuple[str, ...] = ()
     if item.get("exact_date"):
         exact_date_intervals = (item["exact_date"],)
     return GapRowResult(
         source_ref=item["source_ref"],
         resolved_service_user_id=item.get("resolved_service_user_id") or None,
-        preferred_days=day_candidates,
+        day_patterns=day_patterns,
         exact_date_intervals=exact_date_intervals,
         requested_workers=tuple(_resolved_person_from_payload(p) for p in item["requested_workers"]),
         avoided_workers=tuple(_resolved_person_from_payload(p) for p in item["avoided_workers"]),
         notes_addition=item.get("notes_addition", ""),
         note=item.get("note", ""),
+        target_session_duration_minutes=item.get("target_session_duration_minutes") or None,
+        preferred_time_window_start=item.get("preferred_time_window_start") or None,
+        preferred_time_window_end=item.get("preferred_time_window_end") or None,
     )
 
 

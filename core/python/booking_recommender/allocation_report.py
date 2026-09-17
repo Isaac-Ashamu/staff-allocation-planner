@@ -26,6 +26,7 @@ from .models import (
     Worker,
 )
 from .planner import rank_session_candidates
+from .provisioning import ProvisioningResult
 from .scoring import TravelEstimator
 from .travel import FallbackTravelEstimator
 
@@ -51,6 +52,7 @@ class AllocationReport:
     initial_state: PlanningState
     plan: GreedyPlan
     single_session_rankings: Mapping[str, tuple[Recommendation, ...]]
+    provisioning: ProvisioningResult | None = None
 
 
 def build_allocation_report(
@@ -62,8 +64,10 @@ def build_allocation_report(
     top_n: int = 5,
     include_infeasible: bool = False,
     compare_single_session: bool = False,
+    provisioning: ProvisioningResult | None = None,
 ) -> AllocationReport:
     estimator = travel_estimator or FallbackTravelEstimator()
+    state = provisioning.final_state if provisioning is not None else state
     plan = greedy_allocate_open_sessions(
         state,
         estimator,
@@ -94,6 +98,7 @@ def build_allocation_report(
         initial_state=state,
         plan=plan,
         single_session_rankings=rankings,
+        provisioning=provisioning,
     )
 
 
@@ -128,6 +133,7 @@ def allocation_report_to_dict(report: AllocationReport) -> dict:
         },
         "travel_summary": travel_summary,
         "data_quality_audit": data_quality_audit,
+        "provisioning": provisioning_result_to_dict(report.provisioning) if report.provisioning else None,
         "import_report": import_report_to_dict(report.import_report),
         "planning_snapshot": planning_state_to_dict(final_state),
         "proposed_plan": {
@@ -240,6 +246,19 @@ def render_allocation_report(report: AllocationReport) -> str:
     if travel["all_accepted_assignments_used_fallback"]:
         lines.append("- warning: all accepted assignments used fallback travel estimates")
 
+    if data["provisioning"] is not None:
+        provisioning = data["provisioning"]
+        lines.append("")
+        lines.append("Provisioned sessions")
+        lines.append(
+            f"- created {len(provisioning['created'])} session(s) from family requests with no matching session; "
+            f"{len(provisioning['unscheduled'])} request-week(s) could not be scheduled"
+        )
+        for item in provisioning["created"]:
+            lines.append(f"  - {item['session_id']} from {item['family_request_id']}: {item['start']} -> {item['end']}")
+        for item in provisioning["unscheduled"]:
+            lines.append(f"  - unscheduled {item['family_request_id']}: {item['reason']}")
+
     audit = data["data_quality_audit"]
     if audit["existing_imported_assignment_issues"] or audit["location_issues"]:
         lines.append("")
@@ -261,6 +280,29 @@ def render_allocation_report(report: AllocationReport) -> str:
             lines.append(f"- {issue.code}: {issue.message}")
 
     return "\n".join(lines) + "\n"
+
+
+def provisioning_result_to_dict(provisioning: ProvisioningResult) -> dict:
+    return {
+        "created": [
+            {
+                "session_id": item.session_id,
+                "family_request_id": item.family_request_id,
+                "service_user_id": item.service_user_id,
+                "start": item.start.isoformat(),
+                "end": item.end.isoformat(),
+            }
+            for item in provisioning.created
+        ],
+        "unscheduled": [
+            {
+                "family_request_id": item.family_request_id,
+                "service_user_id": item.service_user_id,
+                "reason": item.reason,
+            }
+            for item in provisioning.unscheduled
+        ],
+    }
 
 
 def import_report_to_dict(report: ImportReport) -> dict:
@@ -467,10 +509,18 @@ def family_request_to_dict(request: FamilyRequest) -> dict:
         "service_user_id": request.service_user_id,
         "requested_worker_ids": sorted(request.requested_worker_ids),
         "avoided_worker_ids": sorted(request.avoided_worker_ids),
-        "preferred_days": sorted(request.preferred_days),
+        "preferred_days": list(request.preferred_days),
         "preferred_time_ranges": [window_to_dict(window) for window in request.preferred_time_ranges],
         "unavailable_windows": [window_to_dict(window) for window in request.unavailable_windows],
         "notes": request.notes,
+        "target_sessions_per_week": request.target_sessions_per_week,
+        "target_session_duration_minutes": request.target_session_duration_minutes,
+        "preferred_time_window_start": request.preferred_time_window_start.isoformat() if request.preferred_time_window_start else None,
+        "preferred_time_window_end": request.preferred_time_window_end.isoformat() if request.preferred_time_window_end else None,
+        "day_patterns": [
+            {"days": list(pattern.days), "sessions_per_week": pattern.sessions_per_week}
+            for pattern in request.day_patterns
+        ],
         "source_ref": request.source_ref,
         "source_reference": source_reference_to_dict(request.source_reference),
     }

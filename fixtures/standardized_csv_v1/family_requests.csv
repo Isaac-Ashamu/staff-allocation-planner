@@ -1,3 +1,3 @@
-family_request_id,service_user_id,requested_worker_ids,avoided_worker_ids,preferred_days,preferred_time_ranges,unavailable_time_ranges,notes,source_ref
-request-100,su-orchard,worker-alpha,,4,2026-07-10T14:00:00+01:00/2026-07-10T17:00:00+01:00,,synthetic request prefers Friday afternoon,synthetic-family-requests-row-2
-request-200,su-river,,worker-alpha,5,,2026-07-11T15:00:00+01:00/2026-07-11T18:00:00+01:00,synthetic request avoids one worker,synthetic-family-requests-row-3
+family_request_id,service_user_id,requested_worker_ids,avoided_worker_ids,preferred_days,preferred_time_ranges,unavailable_time_ranges,notes,target_sessions_per_week,target_session_duration_minutes,preferred_time_window_start,preferred_time_window_end,preferred_day_patterns,source_ref
+request-100,su-orchard,worker-alpha,,4,2026-07-10T14:00:00+01:00/2026-07-10T17:00:00+01:00,,synthetic request prefers Friday afternoon,,,,,,synthetic-family-requests-row-2
+request-200,su-river,,worker-alpha,5,,2026-07-11T15:00:00+01:00/2026-07-11T18:00:00+01:00,synthetic request avoids one worker,,,,,,synthetic-family-requests-row-3
