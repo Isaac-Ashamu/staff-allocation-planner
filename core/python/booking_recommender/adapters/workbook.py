@@ -19,10 +19,19 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from email import policy
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 from xml.etree import ElementTree
 
 from ..importer import load_standardized_csv
+from .llm_ad_hoc_parser import (
+    AnthropicAdHocResolver,
+    GapRowResult,
+    LlmAdHocParsingConfig,
+    LlmCallLimitExceeded,
+    LlmCallStats,
+    llm_config_from_env,
+    meets_confidence,
+)
 
 
 STANDARD_TABLE_HEADERS = {
@@ -178,6 +187,8 @@ def convert_workbook_sources(
     import_run_id: str | None = None,
     imported_at: datetime | None = None,
     source_system: str = "workbook-adapter",
+    llm_ad_hoc_parsing: bool = False,
+    llm_resolver: AnthropicAdHocResolver | None = None,
 ) -> WorkbookAdapterReport:
     source_path = Path(source_dir)
     output_path = Path(output_dir)
@@ -215,11 +226,26 @@ def convert_workbook_sources(
         service_user_lookup,
         issues,
     )
+    resolved_llm_resolver = llm_resolver
+    if resolved_llm_resolver is None and llm_ad_hoc_parsing:
+        llm_config = llm_config_from_env()
+        if llm_config.enabled:
+            resolved_llm_resolver = AnthropicAdHocResolver(config=llm_config)
+        else:
+            _add_issue(
+                issues, "warning", "llm_ad_hoc_parsing_unavailable",
+                f"--enable-llm-ad-hoc-parsing was set but {llm_config.anthropic_api_key_env} is not set; "
+                "continuing with deterministic parsing only",
+                "family_requests",
+            )
     family_request_rows = _family_requests(
         tuple(source_tables.get("family_requests", ())) + tuple(source_tables.get("ad_hocs", ())),
         worker_lookup,
         service_user_lookup,
         issues,
+        worker_rows=worker_rows,
+        service_user_rows=service_user_rows,
+        llm_resolver=resolved_llm_resolver,
     )
 
     outputs = {
@@ -275,6 +301,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="Load the generated standardized output with the tenant-agnostic importer.",
     )
+    parser.add_argument(
+        "--enable-llm-ad-hoc-parsing",
+        action="store_true",
+        help=(
+            "Use Claude to fill in ad hoc workbook rows (Phase 1/Phase 2 sheets) the "
+            "deterministic parser could not -- free-text day/time patterns and either/or "
+            "scheduling. Off by default so this adapter never calls external services unless "
+            "asked. Requires ANTHROPIC_API_KEY; only high-confidence name matches are applied "
+            "automatically, everything else is surfaced as a warning for review."
+        ),
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
@@ -284,6 +321,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             booking_workbook=args.booking_workbook,
             alias_config_path=args.alias_config,
             import_run_id=args.import_run_id,
+            llm_ad_hoc_parsing=args.enable_llm_ad_hoc_parsing,
         )
     except WorkbookAdapterError as error:
         print("workbook adapter failed")
@@ -321,8 +359,15 @@ def _read_source_tables(
         if workbook_path and workbook_path.is_file():
             workbook_tables = _read_workbook_tables(workbook_path, issues)
             for key, rows in workbook_tables.items():
-                if rows:
-                    tables[key] = tuple(tables.get(key, ())) + tuple(rows)
+                if not rows:
+                    continue
+                if key == "family_requests":
+                    # Every row reaching "family_requests" via a workbook sheet comes from an
+                    # ad-hoc-shaped sheet per _workbook_sheet_target (Phase 1/Phase 2/ad
+                    # hocs/date requests) -- tag it so LLM-assisted gap-filling can be scoped to
+                    # exactly this source, not the separate raw .eml/.docx/.msg pathway.
+                    rows = tuple({**row, "_source_kind": "ad_hoc_workbook"} for row in rows)
+                tables[key] = tuple(tables.get(key, ())) + tuple(rows)
 
     request_rows = _read_request_files(source_dir, issues)
     if request_rows:
@@ -1057,22 +1102,46 @@ def _family_requests(
     worker_lookup: Mapping[str, str],
     service_user_lookup: Mapping[str, str],
     issues: list[AdapterIssue],
+    *,
+    worker_rows: Sequence[Mapping[str, str]] = (),
+    service_user_rows: Sequence[Mapping[str, str]] = (),
+    llm_resolver: AnthropicAdHocResolver | None = None,
 ) -> list[dict[str, str]]:
-    output = []
+    output: list[dict[str, str]] = []
+    # Rows eligible for LLM gap-filling (ad-hoc-workbook-sourced only, see the
+    # "_source_kind" tag applied in _read_source_tables) that the deterministic
+    # pass either dropped (unresolved service user) or left with no schedule
+    # info at all. Keyed by row_number so results can be merged back precisely.
+    gap_rows: dict[int, dict[str, object]] = {}
+
     for row_number, row in enumerate(rows, start=2):
-        service_user_ids = _resolve_service_user_references(
-            _value(row, "service_user_id", "child_id", "su_id", "child_name", "client_name", "service_user", "service_user_name", "child", "name"),
-            service_user_lookup,
-            issues,
-            "family_requests",
-            row_number,
-            "service_user",
+        client_text = _value(
+            row,
+            "service_user_id", "child_id", "su_id", "child_name", "client_name",
+            "service_user", "service_user_name", "child", "name",
         )
-        if not service_user_ids:
-            continue
+        service_user_ids = _resolve_service_user_references(
+            client_text, service_user_lookup, issues, "family_requests", row_number, "service_user",
+        )
         requested = _resolve_many(_value(row, "requested_worker_ids", "requested_staff", "preferred_worker", "staff", "support_worker", "worker", "sw_requested", "specific_sw"), worker_lookup, issues, "family_requests", row_number, "requested_worker_ids")
         avoided = _resolve_many(_value(row, "avoided_worker_ids", "avoided_staff", "avoid_staff", "avoid_worker"), worker_lookup, issues, "family_requests", row_number, "avoided_worker_ids")
+
+        is_llm_eligible = llm_resolver is not None and row.get("_source_kind") == "ad_hoc_workbook"
+
+        if not service_user_ids:
+            if is_llm_eligible:
+                gap_rows[row_number] = {"row": row, "client_text": client_text, "requested": requested, "avoided": avoided, "dropped": True}
+            continue
+
         base_request_id = _value(row, "family_request_id", "request_id")
+        preferred_days = _preferred_request_days(row)
+        preferred_time_ranges = _family_request_time_ranges(row, issues, row_number)
+        notes = _value(row, "notes", "request", "sessions_notes", "notes_for_july")
+        if is_llm_eligible and not preferred_days and not preferred_time_ranges:
+            gap_rows[row_number] = {
+                "row": row, "client_text": client_text, "requested": requested, "avoided": avoided,
+                "dropped": False, "service_user_ids": service_user_ids, "base_request_id": base_request_id, "notes": notes,
+            }
         for index, service_user_id in enumerate(service_user_ids):
             request_id = base_request_id or _stable_id("request", f"{service_user_id}-{row_number}")
             if len(service_user_ids) > 1:
@@ -1083,14 +1152,129 @@ def _family_requests(
                     "service_user_id": service_user_id,
                     "requested_worker_ids": "|".join(requested),
                     "avoided_worker_ids": "|".join(avoided),
-                    "preferred_days": _preferred_request_days(row),
-                    "preferred_time_ranges": "|".join(_family_request_time_ranges(row, issues, row_number)),
+                    "preferred_days": preferred_days,
+                    "preferred_time_ranges": "|".join(preferred_time_ranges),
                     "unavailable_time_ranges": _pipe(_value(row, "unavailable_time_ranges")),
-                    "notes": _value(row, "notes", "request", "sessions_notes", "notes_for_july"),
+                    "notes": notes,
                     "source_ref": _source_ref("family_requests", row_number),
                 }
             )
+
+    if llm_resolver is not None and gap_rows:
+        _apply_llm_gap_filling(output, gap_rows, worker_rows, service_user_rows, llm_resolver, issues)
+
     return output
+
+
+def _apply_llm_gap_filling(
+    output: list[dict[str, str]],
+    gap_rows: Mapping[int, Mapping[str, object]],
+    worker_rows: Sequence[Mapping[str, str]],
+    service_user_rows: Sequence[Mapping[str, str]],
+    llm_resolver: AnthropicAdHocResolver,
+    issues: list[AdapterIssue],
+) -> None:
+    llm_input = [
+        {
+            "source_ref": f"row-{row_number}",
+            "client_name": gap["client_text"],
+            "raw_notes": _row_raw_notes_text(gap["row"]),
+        }
+        for row_number, gap in gap_rows.items()
+    ]
+    try:
+        results = llm_resolver.resolve_gaps(llm_input, worker_rows, service_user_rows)
+    except LlmCallLimitExceeded as error:
+        _add_issue(issues, "warning", "llm_call_limit_exceeded", str(error), "family_requests")
+        return
+    except Exception as error:  # noqa: BLE001 -- an external API call; never fail the whole adapter run for it
+        _add_issue(issues, "warning", "llm_ad_hoc_parsing_failed", f"LLM-assisted parsing failed: {error}", "family_requests")
+        return
+
+    results_by_row = {int(result.source_ref.removeprefix("row-")): result for result in results}
+    min_confidence = llm_resolver.config.min_confidence_to_auto_apply
+    for row_number, gap in gap_rows.items():
+        result = results_by_row.get(row_number)
+        if result is None:
+            continue
+        _merge_llm_result(output, row_number, gap, result, min_confidence, issues)
+
+
+def _row_raw_notes_text(row: Mapping[str, str]) -> str:
+    return "\n".join(f"{key}: {value}" for key, value in row.items() if key != "_source_kind" and value)
+
+
+def _merge_llm_result(
+    output: list[dict[str, str]],
+    row_number: int,
+    gap: Mapping[str, object],
+    result: GapRowResult,
+    min_confidence: str,
+    issues: list[AdapterIssue],
+) -> None:
+    high_confidence_requested = [w.resolved_id for w in result.requested_workers if w.resolved_id and meets_confidence(w.confidence, min_confidence)]
+    high_confidence_avoided = [w.resolved_id for w in result.avoided_workers if w.resolved_id and meets_confidence(w.confidence, min_confidence)]
+    for person in (*result.requested_workers, *result.avoided_workers):
+        if person.resolved_id and not meets_confidence(person.confidence, min_confidence):
+            _add_issue(
+                issues, "warning", "llm_suggested_name_match",
+                f"LLM suggested {person.name_as_written} -> {person.resolved_id} at {person.confidence} confidence; not applied automatically",
+                "family_requests", row_number, "requested_worker_ids",
+            )
+        elif person.resolved_id is None and person.name_as_written:
+            _add_issue(
+                issues, "warning", "llm_suggested_name_match",
+                f"LLM could not confidently resolve name: {person.name_as_written}",
+                "family_requests", row_number, "requested_worker_ids",
+            )
+    if result.note:
+        _add_issue(issues, "warning", "llm_flagged_ambiguity", result.note, "family_requests", row_number)
+
+    preferred_days = "|".join(str(day) for day in sorted(result.preferred_days))
+    preferred_time_ranges = "|".join(result.exact_date_intervals)
+    notes_parts = [value for value in (gap.get("notes"), result.notes_addition) if value]
+    notes = " | ".join(dict.fromkeys(notes_parts))
+
+    if gap["dropped"]:
+        if not result.resolved_service_user_id:
+            return  # still unresolved -- the original unresolved_name warning stands
+        request_id = _stable_id("request", f"{result.resolved_service_user_id}-{row_number}")
+        output.append(
+            {
+                "family_request_id": request_id,
+                "service_user_id": result.resolved_service_user_id,
+                "requested_worker_ids": "|".join(dict.fromkeys([*gap["requested"], *high_confidence_requested])),
+                "avoided_worker_ids": "|".join(dict.fromkeys([*gap["avoided"], *high_confidence_avoided])),
+                "preferred_days": preferred_days,
+                "preferred_time_ranges": preferred_time_ranges,
+                "unavailable_time_ranges": "",
+                "notes": notes,
+                "source_ref": _source_ref("family_requests", row_number),
+            }
+        )
+        _add_issue(
+            issues, "info", "llm_recovered_family_request",
+            f"LLM resolved previously-unresolved service user to {result.resolved_service_user_id}; row recovered",
+            "family_requests", row_number, "service_user",
+        )
+        return
+
+    for row in output:
+        if row["source_ref"] == _source_ref("family_requests", row_number):
+            if not row["preferred_days"]:
+                row["preferred_days"] = preferred_days
+            if not row["preferred_time_ranges"]:
+                row["preferred_time_ranges"] = preferred_time_ranges
+            row["notes"] = " | ".join(dict.fromkeys(part for part in (row["notes"], result.notes_addition) if part))
+            if high_confidence_requested:
+                row["requested_worker_ids"] = "|".join(dict.fromkeys([*_split(row["requested_worker_ids"]), *high_confidence_requested]))
+            if high_confidence_avoided:
+                row["avoided_worker_ids"] = "|".join(dict.fromkeys([*_split(row["avoided_worker_ids"]), *high_confidence_avoided]))
+    _add_issue(
+        issues, "info", "llm_assisted_family_request",
+        "LLM-assisted parsing filled in day/time details the deterministic parser could not extract",
+        "family_requests", row_number,
+    )
 
 
 def _read_csv(path: Path) -> tuple[dict[str, str], ...]:
