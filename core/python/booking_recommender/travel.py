@@ -75,6 +75,7 @@ class TravelConfig:
     ors_api_key_env: str = "ORS_API_KEY"
     osrm_base_url_env: str = "OSRM_BASE_URL"
     gtfs_feed_path_env: str = "GTFS_FEED_PATH"
+    uk_postcode_db_env: str = "UK_POSTCODE_DB_PATH"
     google_maps_api_key_env: str = "GOOGLE_MAPS_API_KEY"
     enable_google_routes: bool = False
     max_external_route_calls_per_run: int = 100
@@ -437,10 +438,8 @@ class OSRMProvider:
             raise TravelProviderError("OSRM provider only supports drive mode")
         if not _has_coordinates(origin) or not _has_coordinates(destination):
             raise TravelProviderError("OSRM requires coordinates")
-        if self.stats:
-            if self.stats.external_route_calls >= self.config.max_external_route_calls_per_run:
-                raise TravelProviderError("external route call limit exceeded")
-            self.stats.external_route_calls += 1
+        # No max_external_route_calls_per_run check here: that cap exists to protect
+        # metered provider quota (ORS, Google), and a self-hosted OSRM instance has none.
         coords = f"{origin.longitude},{origin.latitude};{destination.longitude},{destination.latitude}"
         query = urllib.parse.urlencode({"overview": "false", "alternatives": "false"})
         request = urllib.request.Request(f"{self.base_url}/route/v1/driving/{coords}?{query}")
@@ -873,16 +872,21 @@ def live_travel_config_from_env(base: TravelConfig | None = None) -> TravelConfi
 
     Provider order becomes cache -> configured live providers -> postcode distance
     -> fallback, so a provider outage degrades to an approximation instead of
-    failing the planning run.
+    failing the planning run. OSRM is tried before OpenRouteService when both are
+    configured: OSRM only ever serves drive-mode requests (it raises immediately
+    for other modes, so this costs non-drive workers nothing) and a self-hosted
+    instance has no request quota, whereas ORS's free tier does -- so preferring
+    OSRM for driving estimates leaves the metered ORS quota for whatever OSRM
+    can't serve.
     """
     resolved = base or TravelConfig()
     live: list[str] = []
     if os.environ.get(resolved.gtfs_feed_path_env):
         live.append("gtfs_transit")
-    if os.environ.get(resolved.ors_api_key_env):
-        live.append("openrouteservice")
     if os.environ.get(resolved.osrm_base_url_env):
         live.append("osrm")
+    if os.environ.get(resolved.ors_api_key_env):
+        live.append("openrouteservice")
     order = ("cache", *live, "postcode_distance", "fallback")
     return replace(resolved, enable_external_travel=bool(live), travel_provider_order=order)
 
@@ -896,17 +900,32 @@ def build_live_travel_estimator(
     stats: TravelRunStats | None = None,
     geocoder: PostcodeGeocoder | None = None,
 ) -> CachedTravelEstimator:
-    """Production wiring: live routing (if credentials are set), live geocoding, persistent caches."""
+    """Production wiring: live routing (if credentials are set), live geocoding, persistent caches.
+
+    Geocoding prefers a local postcode database (``UK_POSTCODE_DB_PATH``, built with
+    ``python -m booking_recommender.uk_postcodes`` from OS Code-Point Open) over the
+    postcodes.io API when one is configured: it's self-hosted, has no rate limit, and
+    every planning run needs a geocode for every worker/session postcode, unlike the
+    routing providers which only need one for the pairs actually being scored.
+    """
     resolved = live_travel_config_from_env(config)
     run_stats = stats or TravelRunStats()
     travel_cache: TravelEstimateCache = (
         SQLiteTravelEstimateCache(travel_cache_db) if travel_cache_db else InMemoryTravelEstimateCache()
     )
     if geocoder is None:
-        geocode_cache: PostcodeGeocodeCache = (
-            SQLitePostcodeGeocodeCache(geocode_cache_db) if geocode_cache_db else InMemoryPostcodeGeocodeCache()
-        )
-        geocoder = PostcodesIoGeocoder(cache=geocode_cache, config=resolved, stats=run_stats)
+        local_postcode_db = os.environ.get(resolved.uk_postcode_db_env)
+        if local_postcode_db:
+            # Imported lazily: uk_postcodes re-exports normalize_postcode/postcode_area
+            # rather than importing them from here, so this stays a one-way dependency.
+            from .uk_postcodes import LocalPostcodeGeocoder
+
+            geocoder = LocalPostcodeGeocoder(local_postcode_db)
+        else:
+            geocode_cache: PostcodeGeocodeCache = (
+                SQLitePostcodeGeocodeCache(geocode_cache_db) if geocode_cache_db else InMemoryPostcodeGeocodeCache()
+            )
+            geocoder = PostcodesIoGeocoder(cache=geocode_cache, config=resolved, stats=run_stats)
     return CachedTravelEstimator(
         tenant_id=tenant_id,
         cache=travel_cache,

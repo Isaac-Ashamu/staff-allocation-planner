@@ -12,6 +12,7 @@ dependencies = ["pypdf>=4"]
 
 [project.optional-dependencies]
 llm = ["anthropic>=0.68"]
+postgres = ["psycopg[binary]>=3.1"]
 
 [tool.setuptools.packages.find]
 where = ["core/python"]
@@ -23,3 +24,4 @@ allocate-sessions = "booking_recommender.allocation_cli:main"
 workbook-adapter = "booking_recommender.adapters.workbook:main"
 recommender-db = "booking_recommender.persistence_cli:main"
 review-ui = "booking_recommender.review_ui:main"
+import-uk-postcodes = "booking_recommender.import_uk_postcodes_cli:main"

@@ -85,6 +85,7 @@ from .travel import (
     with_postcode_area,
 )
 from .transitions import apply_assign_action, apply_exogenous_event
+from .uk_postcodes import LocalPostcodeGeocoder, build_postcode_database
 from .importer import (
     ImportIssue,
     ImportReport,
@@ -125,6 +126,7 @@ __all__ = [
     "ImportReport",
     "InMemoryTravelEstimateCache",
     "Location",
+    "LocalPostcodeGeocoder",
     "ModeSpecificTravelProvider",
     "OSRMProvider",
     "OpenRouteServiceProvider",
@@ -172,6 +174,7 @@ __all__ = [
     "apply_exogenous_event",
     "build_default_travel_providers",
     "build_allocation_report",
+    "build_postcode_database",
     "day_type",
     "estimate_from_dict",
     "estimate_to_dict",

@@ -104,16 +104,56 @@ for dense Manchester routes or sessions near their home/college.
 Planning runs are offline and deterministic by default. Add `--live-travel` to
 `allocate-sessions` or `review-ui` to:
 
-1. geocode every worker home and session postcode through postcodes.io
-   (free, no key; bulk requests of up to 100 postcodes, cached), and
-2. route with OpenRouteService if `ORS_API_KEY` is set (free tier:
-   https://openrouteservice.org/dev/#/signup), or self-hosted OSRM if
-   `OSRM_BASE_URL` is set.
+1. geocode every worker home and session postcode -- self-hosted from a local
+   Ordnance Survey Code-Point Open database if `UK_POSTCODE_DB_PATH` is set
+   (see "Self-hosted geocoding" below), otherwise through postcodes.io (free,
+   no key; bulk requests of up to 100 postcodes, cached), and
+2. route with self-hosted OSRM if `OSRM_BASE_URL` is set, or OpenRouteService
+   if `ORS_API_KEY` is set (free tier: https://openrouteservice.org/dev/#/signup).
+   When both are set, OSRM is tried first for drive-mode requests -- it has no
+   request quota, while ORS's free tier does -- and ORS is used for whatever
+   OSRM can't serve (it only ever handles `drive`).
 
 Without routing credentials the run still geocodes and falls back to
 coordinate-based postcode distance, which is already far better than the
 20-minute default. Provider failures degrade to the next provider and are
 recorded in the travel stats printed at the end of the run.
+
+### Self-hosted OSRM
+
+`local-data/osrm-gb/` holds a pre-built OSRM Great Britain driving extract
+(`osrm-extract`/`osrm-partition`/`osrm-customize` with the MLD algorithm
+against Geofabrik's `great-britain-latest.osm.pbf`, via the `osrm-backend`
+Homebrew formula). Use `scripts/start-osrm.sh` / `scripts/stop-osrm.sh` to run
+it -- it does not survive logout/reboot on its own, so re-run the start script
+after either. On start it prints the `OSRM_BASE_URL` export to use.
+
+Note: `osrm-routed`'s argument parser mishandles an absolute `--base` path
+that contains spaces, so the start script `cd`s into the data directory and
+passes a relative filename -- keep that pattern if you invoke `osrm-routed`
+by hand from a path like this repo's (`.../AI projects/RecommenderSystem/...`).
+
+### Self-hosted geocoding
+
+Set `UK_POSTCODE_DB_PATH` to a SQLite database built by
+`import-uk-postcodes` (or `python -m booking_recommender.import_uk_postcodes_cli`)
+from Ordnance Survey Code-Point Open, and every planning run resolves postcodes
+from it instead of calling postcodes.io -- no network call, no rate limit, and
+it's the one geocoding step every run needs (unlike routing, which only needs
+live credentials for the worker/session pairs actually being scored). Coverage
+is Great Britain only, not Northern Ireland.
+
+```sh
+curl -L -o codepo_gb.zip "https://api.os.uk/downloads/v1/products/CodePointOpen/downloads?area=GB&format=CSV&redirect"
+import-uk-postcodes codepo_gb.zip local-data/cache/uk_postcodes.sqlite
+export UK_POSTCODE_DB_PATH="$(pwd)/local-data/cache/uk_postcodes.sqlite"
+```
+
+Code-Point Open publishes OSGB36 National Grid Eastings/Northings, not WGS84
+lat/lon; `booking_recommender.osgb36` converts each row (validated against
+postcodes.io to within a few metres across GB -- see `tests/test_osgb36.py`).
+Code-Point Open is free under the Open Government Licence, no account needed;
+contains OS data (c) Crown copyright and database right.
 
 Set `GTFS_FEED_PATH` to a directory of standard GTFS files (or a `.zip`) to
 add scheduled bus/tram/train estimates for PUBLIC_TRANSPORT/BUS/TRAM/TRAIN
@@ -134,6 +174,19 @@ allocate-sessions .\standardized --live-travel --travel-cache-db .\cache\travel.
 destination, mode, day type and half-hour bucket) and geocodes between runs, so
 a monthly cycle re-routes only new worker/session pairs. Real postcodes never
 need to enter the repository: the cache file lives with the tenant data.
+
+## Persistence backend
+
+`allocate-sessions --audit-db`, `review-ui --audit-db`, and `recommender-db
+init`/`seed-dev` accept either a SQLite file path (the zero-setup default for
+tests and local dev) or a `postgresql://...` DSN, self-hosted or managed, with
+no other code changes -- same schema, same query helpers, same override-reason
+audit-trail rules. Requires the optional `psycopg[binary]` dependency:
+
+```sh
+pip install '.[postgres]'
+allocate-sessions ./standardized --audit-db postgresql:///booking_recommender
+```
 
 ## Current Scoring Direction
 

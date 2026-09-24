@@ -461,11 +461,23 @@ Implemented:
 - Adds tests for schema initialization, fixture allocation persistence,
   idempotent immutable snapshots, query paths, CLI audit persistence, and
   override-reason enforcement.
+- Status update (September 2026): every persistence entry point (`allocate-sessions
+  --audit-db`, `review-ui --audit-db`, `recommender-db init`/`seed-dev`, and the
+  `booking_recommender.persistence` functions directly) now also accepts a
+  `postgresql://...` DSN in place of a SQLite file path, selecting a Postgres
+  backend with the same schema, same public API, and the same override-reason/
+  audit-trail guarantees -- no other code changes needed. SQLite stays the
+  zero-setup default for tests and local dev. Requires the optional
+  `psycopg[binary]` dependency (`pip install 'staff-session-recommender[postgres]'`);
+  tests for the Postgres path (`tests/test_persistence_postgres.py`) skip
+  automatically when psycopg isn't installed or no local server answers.
 
 Production follow-up:
 
-- Replace or back the SQLite implementation with managed Postgres migrations
-  when the FastAPI backend is introduced.
+- Self-hosted or managed Postgres now works as a persistence backend (see
+  above); still pending is the FastAPI service layer itself, and production
+  migration tooling (the current bootstrap is idempotent `CREATE TABLE IF NOT
+  EXISTS`, not a versioned migration chain).
 - Store original uploads in object storage and persist object metadata instead
   of local source paths.
 - Add API authentication/authorization and tenant isolation around persistence

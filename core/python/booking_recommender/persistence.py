@@ -1,14 +1,21 @@
 """Persistence and audit storage for allocation recommendations.
 
-The production roadmap calls for Postgres and API-managed migrations. This
-module keeps the first implementation dependency-light by using SQLite with a
-schema that maps cleanly to relational storage later.
+SQLite is the default, dependency-light backend, with a schema that maps
+cleanly to relational storage later -- and now does: every function here also
+accepts a Postgres DSN (``postgresql://...``) in place of a SQLite file path,
+selecting the backend declared in the roadmap (see ``docs/BUILD_PLAN.md``
+Phase 7). SQLite stays the zero-setup default for tests and local dev; a
+tenant can move to self-hosted or managed Postgres by pointing ``--audit-db``
+(or the equivalent ``path`` argument) at a DSN instead, with no other code
+changes. Postgres support requires the optional ``psycopg[binary]`` dependency
+(``pip install 'staff-session-recommender[postgres]'``).
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +30,13 @@ from .allocation_report import (
     recommendation_to_dict,
 )
 from .models import PlanningState, Recommendation
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:  # pragma: no cover - exercised only when psycopg is absent
+    psycopg = None
+    dict_row = None
 
 
 SCHEMA_VERSION = 1
@@ -220,6 +234,28 @@ def recommendations_for_service_user(path: str | Path, service_user_id: str) -> 
 
 def recommendations_for_import_run(path: str | Path, import_run_id: str) -> list[sqlite3.Row]:
     return _fetch_recommendations(path, "import_run_id = ?", (import_run_id,))
+
+
+def open_audit_connection(path: str | Path):
+    """Public connection helper for read paths outside this module (review_ui) that
+    need the same SQLite/Postgres dialect dispatch as the write path here, instead of
+    assuming SQLite directly."""
+    return _connect(path)
+
+
+def operational_errors() -> tuple[type[Exception], ...]:
+    """Exception types meaning "query failed, likely because the schema/table doesn't
+    exist yet" for whichever backend ``path`` resolves to. For read paths that should
+    degrade to an empty result before the audit database has been initialized, rather
+    than assuming SQLite's error type."""
+    if psycopg is not None:
+        return (sqlite3.OperationalError, psycopg.Error)
+    return (sqlite3.OperationalError,)
+
+
+def is_postgres_dsn(path: str | Path) -> bool:
+    dsn = str(path)
+    return dsn.startswith("postgresql://") or dsn.startswith("postgres://")
 
 
 def _initialize_connection(connection: sqlite3.Connection) -> None:
@@ -617,10 +653,90 @@ def _same_candidate(left: Recommendation, right: Recommendation) -> bool:
     )
 
 
-def _connect(path: str | Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(str(path))
+def _connect(path: str | Path):
+    dsn = str(path)
+    if dsn.startswith("postgresql://") or dsn.startswith("postgres://"):
+        return _PostgresConnection(dsn)
+    connection = sqlite3.connect(dsn)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+_OR_IGNORE_RE = re.compile(r"INSERT\s+OR\s+IGNORE\s+INTO", re.IGNORECASE)
+
+
+def _translate_for_postgres(sql: str) -> str:
+    """Rewrite the SQLite-flavoured SQL used throughout this module for Postgres.
+
+    Only two constructs differ between the dialects here: ``?`` positional
+    placeholders (Postgres uses ``%s``) and SQLite's ``INSERT OR IGNORE``
+    (Postgres expresses "ignore on conflict" as a bare ``ON CONFLICT DO
+    NOTHING`` suffix instead). Every ``INSERT ... ON CONFLICT(col) DO UPDATE
+    SET ... = excluded....`` statement in this module is already
+    Postgres-compatible syntax as written.
+    """
+    translated = sql
+    if _OR_IGNORE_RE.search(translated):
+        translated = _OR_IGNORE_RE.sub("INSERT INTO", translated).rstrip() + " ON CONFLICT DO NOTHING"
+    return translated.replace("?", "%s")
+
+
+class _NoOpCursor:
+    """Stand-in for statements that only make sense for SQLite (e.g. PRAGMA)."""
+
+    def fetchone(self):
+        return None
+
+    def fetchall(self):
+        return []
+
+    def __iter__(self):
+        return iter(())
+
+
+class _PostgresConnection:
+    """Thin wrapper giving a psycopg connection the sqlite3.Connection surface
+    this module uses: ``execute``/``executescript``/``commit`` plus dict-like
+    rows, so the rest of the module needs no backend-specific branches."""
+
+    def __init__(self, dsn: str) -> None:
+        if psycopg is None:
+            raise PersistenceError(
+                "Postgres support requires the optional 'psycopg[binary]' dependency "
+                "(pip install 'staff-session-recommender[postgres]')"
+            )
+        self._raw = psycopg.connect(dsn, row_factory=dict_row, autocommit=False)
+
+    def execute(self, sql: str, params: Iterable = ()):
+        if sql.strip().upper().startswith("PRAGMA"):
+            return _NoOpCursor()
+        cursor = self._raw.cursor()
+        cursor.execute(_translate_for_postgres(sql), tuple(params))
+        return cursor
+
+    def executescript(self, sql: str) -> None:
+        statements = "\n".join(
+            line for line in sql.splitlines() if not line.strip().upper().startswith("PRAGMA")
+        )
+        cursor = self._raw.cursor()
+        cursor.execute(statements)
+
+    def commit(self) -> None:
+        self._raw.commit()
+
+    def close(self) -> None:
+        self._raw.close()
+
+    def __enter__(self) -> "_PostgresConnection":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is None:
+            self._raw.commit()
+        else:
+            self._raw.rollback()
+        self._raw.close()
+        return False
 
 
 def _json(value) -> str:

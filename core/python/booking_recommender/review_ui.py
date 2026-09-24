@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import sqlite3
 from dataclasses import dataclass, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,15 +28,23 @@ from .provisioning import provision_sessions_from_family_requests
 from .persistence import (
     PersistenceError,
     initialize_database,
+    is_postgres_dsn,
+    open_audit_connection,
+    operational_errors,
     persist_allocation_report,
     record_human_decision,
 )
 
 
+def _as_database_path(value: str | Path) -> str | Path:
+    """Keep a Postgres DSN as a plain string; resolve anything else as a filesystem path."""
+    return value if is_postgres_dsn(value) else Path(value)
+
+
 @dataclass(frozen=True)
 class PreparedReviewRun:
     report: AllocationReport
-    database_path: Path
+    database_path: str | Path
     planning_snapshot_id: str
     recommendation_ids: tuple[str, ...]
 
@@ -76,7 +83,7 @@ def prepare_review_run(
         compare_single_session=True,
         provisioning=provisioning,
     )
-    database_path = Path(audit_db)
+    database_path = _as_database_path(audit_db)
     persisted = persist_allocation_report(database_path, report, tenant_id=tenant_id)
     return PreparedReviewRun(
         report=report,
@@ -313,7 +320,7 @@ def serve_review_ui(
 ) -> ThreadingHTTPServer:
     """Create a configured HTTP server. Call ``serve_forever`` to run it."""
 
-    database = Path(database_path)
+    database = _as_database_path(database_path)
     initialize_database(database)
 
     class ReviewHandler(BaseHTTPRequestHandler):
@@ -363,7 +370,11 @@ def serve_review_ui(
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Serve a local review UI for a standardized CSV allocation plan.")
     parser.add_argument("folder", help="Folder containing standardized CSV v1 files.")
-    parser.add_argument("--audit-db", required=True, help="SQLite audit database path for decisions.")
+    parser.add_argument(
+        "--audit-db",
+        required=True,
+        help="Audit database for decisions: a SQLite file path, or a postgresql://... DSN.",
+    )
     parser.add_argument("--tenant-id", help="Optional tenant ID override for audit persistence.")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind.")
     parser.add_argument("--port", type=int, default=8787, help="Port to bind.")
@@ -434,9 +445,8 @@ def main(argv: Iterable[str] | None = None) -> int:
 def _recommendation_rows(database_path: str | Path | None, import_run_id: str | None) -> list[dict]:
     if not database_path or not import_run_id:
         return []
-    connection = sqlite3.connect(database_path)
+    connection = open_audit_connection(database_path)
     try:
-        connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """
             SELECT *
@@ -447,7 +457,7 @@ def _recommendation_rows(database_path: str | Path | None, import_run_id: str | 
             (import_run_id,),
         ).fetchall()
         return [dict(row) for row in rows]
-    except sqlite3.OperationalError:
+    except operational_errors():
         return []
     finally:
         connection.close()
@@ -456,9 +466,8 @@ def _recommendation_rows(database_path: str | Path | None, import_run_id: str | 
 def _decision_rows(database_path: str | Path | None, import_run_id: str | None) -> list[dict]:
     if not database_path or not import_run_id:
         return []
-    connection = sqlite3.connect(database_path)
+    connection = open_audit_connection(database_path)
     try:
-        connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """
             SELECT d.*, r.session_id, r.worker_id, r.rank_position
@@ -470,7 +479,7 @@ def _decision_rows(database_path: str | Path | None, import_run_id: str | None) 
             (import_run_id,),
         ).fetchall()
         return [dict(row) for row in rows]
-    except sqlite3.OperationalError:
+    except operational_errors():
         return []
     finally:
         connection.close()

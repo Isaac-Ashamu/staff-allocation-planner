@@ -47,7 +47,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     )
     parser.add_argument(
         "--audit-db",
-        help="Optional SQLite audit database path for persisted snapshots, recommendations, and decisions.",
+        help=(
+            "Optional audit database for persisted snapshots, recommendations, and decisions: "
+            "a SQLite file path, or a postgresql://... DSN."
+        ),
     )
     parser.add_argument(
         "--tenant-id",
@@ -169,8 +172,9 @@ def add_live_travel_arguments(parser: argparse.ArgumentParser) -> None:
         "--max-external-route-calls",
         type=int,
         help=(
-            "Override the per-run cap on live routing API calls (default: 100). "
-            "Higher values consume more provider quota; only takes effect with --live-travel."
+            "Override the per-run cap on metered routing API calls -- OpenRouteService, "
+            "Google Routes -- (default: 100). Does not limit self-hosted OSRM, which has "
+            "no quota to protect. Only takes effect with --live-travel."
         ),
     )
 

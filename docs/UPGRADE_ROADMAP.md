@@ -90,6 +90,17 @@ conservative one-transfer/45-minute-wait budget, and fall through to
 postcode-distance). No live disruption data, no multi-transfer search --
 those remain open.
 
+Status update (September 2026): geocoding can now also be fully self-hosted.
+Setting `UK_POSTCODE_DB_PATH` to a database built by `import-uk-postcodes`
+from Ordnance Survey Code-Point Open (`booking_recommender.uk_postcodes`,
+free, Open Government Licence, GB coverage only) resolves postcodes locally
+instead of calling postcodes.io -- no network call, no rate limit. Code-Point
+Open publishes OSGB36 National Grid Eastings/Northings; `booking_recommender.
+osgb36` converts to WGS84 (validated against postcodes.io to within a few
+metres across GB). Provider order now also tries self-hosted OSRM before the
+metered ORS free tier for drive-mode requests when both are configured, since
+OSRM only ever serves `drive` and has no request quota.
+
 Remaining: multi-transfer journeys, live disruption/delay data, and Google
 Routes if a tenant wants it over OpenRouteService.
 
@@ -155,7 +166,11 @@ Candidate algorithms:
 
 ## Phase 5: SaaS Backend
 
-Status: design pending.
+Status: design pending. Postgres itself is no longer pending, though: every
+persistence entry point accepts a `postgresql://...` DSN in place of a SQLite
+path (self-hosted or managed) with the same schema and API -- see Phase 7 in
+`docs/BUILD_PLAN.md`. What's still pending here is the API/service layer
+around it.
 
 Recommended stack:
 

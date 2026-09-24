@@ -8,21 +8,25 @@ from typing import Iterable
 
 from .persistence import initialize_database, seed_development_data
 
+_DATABASE_HELP = "SQLite file path, or a postgresql://... DSN for the optional Postgres backend."
+
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Manage the recommender audit database.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     init_parser = subparsers.add_parser("init", help="Create or migrate the audit database.")
-    init_parser.add_argument("database", help="SQLite database path for local development.")
+    init_parser.add_argument("database", help=_DATABASE_HELP)
 
     seed_parser = subparsers.add_parser("seed-dev", help="Create a synthetic development tenant.")
-    seed_parser.add_argument("database", help="SQLite database path for local development.")
+    seed_parser.add_argument("database", help=_DATABASE_HELP)
     seed_parser.add_argument("--tenant-id", default="dev-tenant", help="Tenant ID to create.")
 
     args = parser.parse_args(list(argv) if argv is not None else None)
-    database = Path(args.database)
-    database.parent.mkdir(parents=True, exist_ok=True)
+    database = args.database
+    if not database.startswith("postgresql://") and not database.startswith("postgres://"):
+        database = Path(database)
+        database.parent.mkdir(parents=True, exist_ok=True)
 
     if args.command == "init":
         initialize_database(database)

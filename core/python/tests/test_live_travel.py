@@ -178,6 +178,55 @@ class LiveTravelConfigTests(unittest.TestCase):
         self.assertEqual(estimator.stats.estimates_from_cache, 1)
         self.assertEqual(estimator.stats.external_route_calls, 1)
 
+    def test_osrm_calls_are_not_limited_by_max_external_route_calls(self):
+        """OSRM is self-hosted and has no quota to protect, unlike ORS/Google -- so it
+        must keep working past max_external_route_calls_per_run, and must not count
+        against that budget (stats.external_route_calls should stay ORS/Google-only)."""
+
+        osrm_calls: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            if "postcodes.io" in request.full_url:
+                return _postcodes_io_reply(request)
+            if "127.0.0.1" in request.full_url or "localhost" in request.full_url:
+                osrm_calls.append(request.full_url)
+                return _FakeResponse(json.dumps({"routes": [{"duration": 600.0, "distance": 5000.0}]}).encode())
+            raise AssertionError(request.full_url)
+
+        from datetime import datetime
+
+        from booking_recommender import TravelMode, Worker
+
+        worker = Worker(
+            id="w1",
+            name="Test Worker",
+            home_location=Location(label="home", postcode="SW1A 1AA"),
+            travel_modes=frozenset({TravelMode.DRIVE}),
+            has_car=True,
+        )
+        destination = Location(label="session", postcode="M1 1AE")
+
+        with mock.patch.dict(
+            os.environ, {"OSRM_BASE_URL": "http://127.0.0.1:5001"}, clear=True
+        ), mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            estimator = build_live_travel_estimator(
+                tenant_id="t", config=TravelConfig(max_external_route_calls_per_run=2)
+            )
+            for hour in range(9, 14):
+                # Different hours land in different half-hour cache buckets, forcing 5
+                # genuinely distinct OSRM lookups instead of 5 cache hits on the same one.
+                estimate = estimator.estimate(
+                    worker=worker,
+                    origin=worker.home_location,
+                    destination=destination,
+                    departure_time=datetime(2026, 9, 20, hour, 0),
+                )
+                self.assertEqual(estimate.provider, "osrm")
+
+        self.assertEqual(len(osrm_calls), 5, "all 5 distinct routes should reach OSRM despite the cap of 2")
+        self.assertEqual(estimator.stats.estimates_from_osrm, 5)
+        self.assertEqual(estimator.stats.external_route_calls, 0, "OSRM must not consume the metered-quota counter")
+
     def test_live_estimator_degrades_to_postcode_distance_when_ors_fails(self):
         def fake_urlopen(request, timeout=None):
             if "postcodes.io" in request.full_url:
