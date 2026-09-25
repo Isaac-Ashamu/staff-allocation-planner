@@ -121,12 +121,25 @@ recorded in the travel stats printed at the end of the run.
 
 ### Self-hosted OSRM
 
-`local-data/osrm-gb/` holds a pre-built OSRM Great Britain driving extract
-(`osrm-extract`/`osrm-partition`/`osrm-customize` with the MLD algorithm
-against Geofabrik's `great-britain-latest.osm.pbf`, via the `osrm-backend`
-Homebrew formula). Use `scripts/start-osrm.sh` / `scripts/stop-osrm.sh` to run
-it -- it does not survive logout/reboot on its own, so re-run the start script
-after either. On start it prints the `OSRM_BASE_URL` export to use.
+`local-data/osrm-gb/` (drive), `local-data/osrm-gb-bicycle/` (cycle), and
+`local-data/osrm-gb-foot/` (walk) each hold a pre-built OSRM Great Britain
+extract for one profile -- one running `osrm-routed` process serves exactly
+one profile, so cycle and walk are separate instances/ports from drive, not a
+flag on the same one. Built with `osrm-extract`/`osrm-partition`/
+`osrm-customize` (MLD algorithm) against Geofabrik's
+`great-britain-latest.osm.pbf`, using the matching `car.lua`/`bicycle.lua`/
+`foot.lua` profile bundled with the `osrm-backend` Homebrew formula; all three
+extracts can share one downloaded `.osm.pbf` (symlink it into each profile's
+directory).
+
+Use `scripts/start-osrm.sh [drive|cycle|walk]` / `scripts/stop-osrm.sh
+[drive|cycle|walk]` to run one (default: `drive`) -- none survive
+logout/reboot on their own, so re-run after either. Each prints the matching
+env var to export: `OSRM_BASE_URL` (drive), `OSRM_CYCLE_BASE_URL` (cycle), or
+`OSRM_WALK_BASE_URL` (walk). Configuring only some of the three is fine --
+`live_travel_config_from_env` enables whichever are set, and any mode without
+a self-hosted instance falls through to ORS (if configured) or postcode
+distance, exactly like before this existed.
 
 Note: `osrm-routed`'s argument parser mishandles an absolute `--base` path
 that contains spaces, so the start script `cd`s into the data directory and
@@ -187,6 +200,15 @@ audit-trail rules. Requires the optional `psycopg[binary]` dependency:
 pip install '.[postgres]'
 allocate-sessions ./standardized --audit-db postgresql:///booking_recommender
 ```
+
+## Handing this off / Docker
+
+`docker-compose.yml` and `Dockerfile` package the software layer (the Python
+package, Postgres, self-hosted OSRM) for a fresh machine. Python dependencies
+are pinned in `requirements-lock.txt` (regenerate with `uv pip compile
+pyproject.toml --all-extras -o requirements-lock.txt`). The large geographic
+datasets (OSRM extract, UK postcode DB, GTFS feed) aren't part of the image --
+see [Deployment](./docs/DEPLOYMENT.md) for the full walkthrough.
 
 ## Current Scoring Direction
 

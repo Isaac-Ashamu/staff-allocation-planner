@@ -1,0 +1,95 @@
+# Software layer only. The large geographic datasets (OSRM GB extract, UK
+# postcode DB, GTFS feed) are built/downloaded separately -- see
+# docs/DEPLOYMENT.md -- and mounted here from local-data/docker/, which is
+# gitignored (covered by the existing local-data/ rule) and never committed.
+#
+# Common commands:
+#   docker compose up -d postgres                     # start just the database
+#   docker compose run --rm app allocate-sessions ...  # one-off CLI commands
+#   docker compose --profile routing up -d osrm        # after the OSRM dataset exists
+#   docker compose up -d review-ui                     # http://localhost:8787
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: booking_recommender
+      POSTGRES_USER: booking_recommender
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-booking_recommender}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Host-side 5433, not 5432: this machine also runs a native Postgres on 5432
+      # for local (non-Docker) testing, and the two silently coexisted only because
+      # one bound to loopback-only and the other to the wildcard address -- not
+      # something to rely on. Containers still reach this one at postgres:5432
+      # (the internal Docker network), unaffected by this host-side mapping.
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U booking_recommender"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Serves a pre-built OSRM dataset. Only start this once local-data/docker/osrm/
+  # actually has a customized .osrm dataset in it (docs/DEPLOYMENT.md) -- there's
+  # nothing to serve before that, so it's behind a profile rather than starting
+  # by default with `docker compose up`.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend
+    profiles: ["routing"]
+    command: ["osrm-routed", "--algorithm", "mld", "/data/region.osrm"]
+    volumes:
+      - ./local-data/docker/osrm:/data
+    ports:
+      - "5001:5000"
+
+  # Base image for one-off CLI commands: docker compose run --rm app <command> ...
+  app:
+    build: .
+    environment:
+      OSRM_BASE_URL: http://osrm:5000
+      UK_POSTCODE_DB_PATH: /data/postcodes/uk_postcodes.sqlite
+      GTFS_FEED_PATH: /data/gtfs
+      ORS_API_KEY: ${ORS_API_KEY:-}
+      DATABASE_URL: postgresql://booking_recommender:${POSTGRES_PASSWORD:-booking_recommender}@postgres:5432/booking_recommender
+    volumes:
+      - ./local-data/docker:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: ["tools"]
+
+  review-ui:
+    build: .
+    # No --live-travel here: this project is off-by-default for external/live
+    # calls, and review-ui should start with just Postgres + tenant data, not
+    # also require the OSRM/postcode/GTFS setup from docs/DEPLOYMENT.md steps
+    # 2-4. Add --live-travel yourself once those exist, e.g.:
+    #   docker compose run --rm -p 8787:8787 review-ui review-ui /data/standardized \
+    #     --audit-db postgresql://... --host 0.0.0.0 --live-travel
+    command:
+      - review-ui
+      - /data/standardized
+      - --audit-db
+      - postgresql://booking_recommender:${POSTGRES_PASSWORD:-booking_recommender}@postgres:5432/booking_recommender
+      - --host
+      - "0.0.0.0"
+    environment:
+      OSRM_BASE_URL: http://osrm:5000
+      UK_POSTCODE_DB_PATH: /data/postcodes/uk_postcodes.sqlite
+      GTFS_FEED_PATH: /data/gtfs
+      ORS_API_KEY: ${ORS_API_KEY:-}
+    volumes:
+      - ./local-data/docker:/data
+    ports:
+      - "8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  # Named volume, not a host bind mount: Postgres's data directory doesn't need to be
+  # human-visible on the host (back it up with pg_dump, not by copying files), and this
+  # avoids the bind-mount I/O penalty Docker Desktop on macOS has for disk-heavy writes.
+  postgres-data:

@@ -74,6 +74,8 @@ class TravelConfig:
     enable_external_travel: bool = False
     ors_api_key_env: str = "ORS_API_KEY"
     osrm_base_url_env: str = "OSRM_BASE_URL"
+    osrm_cycle_base_url_env: str = "OSRM_CYCLE_BASE_URL"
+    osrm_walk_base_url_env: str = "OSRM_WALK_BASE_URL"
     gtfs_feed_path_env: str = "GTFS_FEED_PATH"
     uk_postcode_db_env: str = "UK_POSTCODE_DB_PATH"
     google_maps_api_key_env: str = "GOOGLE_MAPS_API_KEY"
@@ -408,20 +410,37 @@ class OpenRouteServiceProvider:
         return _request_json_with_retries(request, config=self.config)
 
 
+_OSRM_PROFILE_NAMES = {
+    TravelMode.DRIVE: "driving",
+    TravelMode.CYCLE: "cycling",
+    TravelMode.WALK: "walking",
+}
+
+
 class OSRMProvider:
-    """Self-hosted OSRM provider for driving estimates."""
+    """Self-hosted OSRM provider for one travel mode.
+
+    One running osrm-routed instance serves exactly one profile (one .osrm
+    dataset built with car.lua, bicycle.lua, or foot.lua), so one instance of
+    this class serves exactly one mode too -- construct one per mode/base URL
+    and combine them with ModeSpecificTravelProvider for the full set.
+    """
 
     name = "osrm"
 
     def __init__(
         self,
         *,
+        mode: TravelMode = TravelMode.DRIVE,
         base_url: str | None = None,
+        base_url_env: str | None = None,
         config: TravelConfig | None = None,
         stats: TravelRunStats | None = None,
     ) -> None:
         self.config = config or TravelConfig()
-        self.base_url = (base_url if base_url is not None else os.environ.get(self.config.osrm_base_url_env, "")).rstrip("/")
+        self.mode = mode
+        env_name = base_url_env or self.config.osrm_base_url_env
+        self.base_url = (base_url if base_url is not None else os.environ.get(env_name, "")).rstrip("/")
         self.stats = stats
 
     def estimate(
@@ -434,15 +453,16 @@ class OSRMProvider:
     ) -> TravelEstimate:
         if not self.config.enable_external_travel or not self.base_url:
             raise TravelProviderError("OSRM is not configured")
-        if mode != TravelMode.DRIVE:
-            raise TravelProviderError("OSRM provider only supports drive mode")
+        if mode != self.mode:
+            raise TravelProviderError(f"OSRM provider only supports {self.mode.value} mode")
         if not _has_coordinates(origin) or not _has_coordinates(destination):
             raise TravelProviderError("OSRM requires coordinates")
         # No max_external_route_calls_per_run check here: that cap exists to protect
         # metered provider quota (ORS, Google), and a self-hosted OSRM instance has none.
         coords = f"{origin.longitude},{origin.latitude};{destination.longitude},{destination.latitude}"
         query = urllib.parse.urlencode({"overview": "false", "alternatives": "false"})
-        request = urllib.request.Request(f"{self.base_url}/route/v1/driving/{coords}?{query}")
+        profile = _OSRM_PROFILE_NAMES.get(self.mode, "driving")
+        request = urllib.request.Request(f"{self.base_url}/route/v1/{profile}/{coords}?{query}")
         data = _request_json_with_retries(request, config=self.config)
         routes = data.get("routes") or []
         if not routes:
@@ -661,7 +681,17 @@ def build_default_travel_providers(
         "public_transport": PublicTransportProvider(configured=False),
     }
     providers["openrouteservice"] = OpenRouteServiceProvider(config=resolved, stats=stats)
-    providers["osrm"] = OSRMProvider(config=resolved, stats=stats)
+    providers["osrm"] = ModeSpecificTravelProvider(
+        {
+            TravelMode.DRIVE: OSRMProvider(mode=TravelMode.DRIVE, config=resolved, stats=stats),
+            TravelMode.CYCLE: OSRMProvider(
+                mode=TravelMode.CYCLE, base_url_env=resolved.osrm_cycle_base_url_env, config=resolved, stats=stats
+            ),
+            TravelMode.WALK: OSRMProvider(
+                mode=TravelMode.WALK, base_url_env=resolved.osrm_walk_base_url_env, config=resolved, stats=stats
+            ),
+        }
+    )
     providers["google_routes"] = GoogleRoutesProvider(config=resolved, stats=stats)
     # Imported lazily: gtfs_transit imports from this module, so a top-level
     # import here would be circular.
@@ -873,17 +903,22 @@ def live_travel_config_from_env(base: TravelConfig | None = None) -> TravelConfi
     Provider order becomes cache -> configured live providers -> postcode distance
     -> fallback, so a provider outage degrades to an approximation instead of
     failing the planning run. OSRM is tried before OpenRouteService when both are
-    configured: OSRM only ever serves drive-mode requests (it raises immediately
-    for other modes, so this costs non-drive workers nothing) and a self-hosted
-    instance has no request quota, whereas ORS's free tier does -- so preferring
-    OSRM for driving estimates leaves the metered ORS quota for whatever OSRM
-    can't serve.
+    configured, mode by mode (OSRM_BASE_URL for drive, OSRM_CYCLE_BASE_URL for
+    cycle, OSRM_WALK_BASE_URL for walk -- each is a separate self-hosted instance,
+    since one osrm-routed process serves exactly one profile/mode): a self-hosted
+    instance has no request quota, whereas ORS's free tier does, so preferring
+    OSRM leaves the metered ORS quota for whatever mode/tenant has no self-hosted
+    instance configured for it.
     """
     resolved = base or TravelConfig()
     live: list[str] = []
     if os.environ.get(resolved.gtfs_feed_path_env):
         live.append("gtfs_transit")
-    if os.environ.get(resolved.osrm_base_url_env):
+    if (
+        os.environ.get(resolved.osrm_base_url_env)
+        or os.environ.get(resolved.osrm_cycle_base_url_env)
+        or os.environ.get(resolved.osrm_walk_base_url_env)
+    ):
         live.append("osrm")
     if os.environ.get(resolved.ors_api_key_env):
         live.append("openrouteservice")

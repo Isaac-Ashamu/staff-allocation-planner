@@ -227,6 +227,107 @@ class LiveTravelConfigTests(unittest.TestCase):
         self.assertEqual(estimator.stats.estimates_from_osrm, 5)
         self.assertEqual(estimator.stats.external_route_calls, 0, "OSRM must not consume the metered-quota counter")
 
+    def test_osrm_serves_cycle_and_walk_from_separate_self_hosted_instances(self):
+        """Each mode is a separate osrm-routed process/profile (OSRM_CYCLE_BASE_URL,
+        OSRM_WALK_BASE_URL), distinct from the drive one (OSRM_BASE_URL). A worker whose
+        preferred mode is cycle/walk should route via its own instance, not fall through
+        to ORS, when that instance is configured."""
+
+        calls: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            if "postcodes.io" in request.full_url:
+                return _postcodes_io_reply(request)
+            calls.append(request.full_url)
+            if ":5002" in request.full_url:
+                assert "/route/v1/cycling/" in request.full_url
+                return _FakeResponse(json.dumps({"routes": [{"duration": 300.0, "distance": 1500.0}]}).encode())
+            if ":5003" in request.full_url:
+                assert "/route/v1/walking/" in request.full_url
+                return _FakeResponse(json.dumps({"routes": [{"duration": 900.0, "distance": 1200.0}]}).encode())
+            raise AssertionError(request.full_url)
+
+        from datetime import datetime
+
+        from booking_recommender import TravelMode, Worker
+
+        destination = Location(label="session", postcode="M1 1AE")
+        cyclist = Worker(
+            id="w-cycle",
+            name="Cyclist",
+            home_location=Location(label="home", postcode="SW1A 1AA"),
+            travel_modes=frozenset({TravelMode.CYCLE, TravelMode.WALK}),
+        )
+        walker = Worker(
+            id="w-walk",
+            name="Walker",
+            home_location=Location(label="home", postcode="SW1A 1AA"),
+            travel_modes=frozenset({TravelMode.WALK}),
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "OSRM_BASE_URL": "http://127.0.0.1:5001",
+                "OSRM_CYCLE_BASE_URL": "http://127.0.0.1:5002",
+                "OSRM_WALK_BASE_URL": "http://127.0.0.1:5003",
+            },
+            clear=True,
+        ), mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            estimator = build_live_travel_estimator(tenant_id="t")
+            cycle_estimate = estimator.estimate(
+                worker=cyclist, origin=cyclist.home_location, destination=destination, departure_time=datetime(2026, 9, 20, 9)
+            )
+            walk_estimate = estimator.estimate(
+                worker=walker, origin=walker.home_location, destination=destination, departure_time=datetime(2026, 9, 20, 9)
+            )
+
+        self.assertEqual(cycle_estimate.provider, "osrm")
+        self.assertEqual(cycle_estimate.duration_minutes, 5.0)
+        self.assertEqual(walk_estimate.provider, "osrm")
+        self.assertEqual(walk_estimate.duration_minutes, 15.0)
+        self.assertEqual(estimator.stats.estimates_from_osrm, 2)
+        self.assertEqual(estimator.stats.external_route_calls, 0)
+
+    def test_cycle_falls_through_to_ors_when_no_self_hosted_cycle_instance(self):
+        """A tenant with only drive self-hosted (no OSRM_CYCLE_BASE_URL) should still get
+        a cycle estimate via ORS, exactly like before self-hosted cycle/walk existed."""
+
+        ors_calls: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            if "postcodes.io" in request.full_url:
+                return _postcodes_io_reply(request)
+            if "openrouteservice" in request.full_url:
+                ors_calls.append(request.full_url)
+                return _FakeResponse(json.dumps({"durations": [[0, 600.0]], "distances": [[0, 3000.0]]}).encode())
+            raise AssertionError(request.full_url)
+
+        from datetime import datetime
+
+        from booking_recommender import TravelMode, Worker
+
+        cyclist = Worker(
+            id="w-cycle",
+            name="Cyclist",
+            home_location=Location(label="home", postcode="SW1A 1AA"),
+            travel_modes=frozenset({TravelMode.CYCLE, TravelMode.WALK}),
+        )
+        destination = Location(label="session", postcode="M1 1AE")
+
+        with mock.patch.dict(
+            os.environ,
+            {"OSRM_BASE_URL": "http://127.0.0.1:5001", "ORS_API_KEY": "synthetic"},
+            clear=True,
+        ), mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            estimator = build_live_travel_estimator(tenant_id="t")
+            estimate = estimator.estimate(
+                worker=cyclist, origin=cyclist.home_location, destination=destination, departure_time=datetime(2026, 9, 20, 9)
+            )
+
+        self.assertEqual(estimate.provider, "openrouteservice")
+        self.assertEqual(len(ors_calls), 1)
+
     def test_live_estimator_degrades_to_postcode_distance_when_ors_fails(self):
         def fake_urlopen(request, timeout=None):
             if "postcodes.io" in request.full_url:

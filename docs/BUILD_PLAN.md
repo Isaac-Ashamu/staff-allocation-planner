@@ -478,6 +478,12 @@ Production follow-up:
   above); still pending is the FastAPI service layer itself, and production
   migration tooling (the current bootstrap is idempotent `CREATE TABLE IF NOT
   EXISTS`, not a versioned migration chain).
+- Status update (September 2026): the software layer (Python package,
+  Postgres, self-hosted OSRM) can now be packaged for a fresh machine via
+  `docker-compose.yml`/`Dockerfile`, with Python dependencies pinned in
+  `requirements-lock.txt` -- see `docs/DEPLOYMENT.md`. This is a local/
+  self-hosted handoff, not the SaaS deployment target below: no auth, no
+  tenant isolation, no TLS, no CI/CD.
 - Store original uploads in object storage and persist object metadata instead
   of local source paths.
 - Add API authentication/authorization and tenant isolation around persistence

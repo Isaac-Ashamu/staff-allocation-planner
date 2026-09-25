@@ -101,6 +101,19 @@ metres across GB). Provider order now also tries self-hosted OSRM before the
 metered ORS free tier for drive-mode requests when both are configured, since
 OSRM only ever serves `drive` and has no request quota.
 
+Status update (September 2026): self-hosted OSRM now also covers cycle and
+walk, not just drive -- discovered as a real, not hypothetical, need when a
+day of rigorous cycle/walk testing exhausted OpenRouteService's free-tier
+daily quota mid-run (confirmed directly against the live API: `{"error":
+"Quota exceeded"}`), degrading those modes to postcode-distance for the rest
+of that run. One `osrm-routed` process serves exactly one profile, so cycle
+(`OSRM_CYCLE_BASE_URL`) and walk (`OSRM_WALK_BASE_URL`) are separate
+instances/ports from drive (`OSRM_BASE_URL`), built the same way with
+`bicycle.lua`/`foot.lua` against the same `.osm.pbf`. `OSRMProvider` now takes
+a `mode` and is combined per mode via `ModeSpecificTravelProvider`; any mode
+without a configured self-hosted instance still falls through to ORS exactly
+as before. See "Self-hosted OSRM" in the README.
+
 Remaining: multi-transfer journeys, live disruption/delay data, and Google
 Routes if a tenant wants it over OpenRouteService.
 

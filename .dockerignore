@@ -1,0 +1,10 @@
+.git
+local-data
+allocation_outputs
+fixtures
+config
+docs
+scripts
+**/__pycache__
+**/*.pyc
+.DS_Store
