@@ -1820,7 +1820,13 @@ def _availability_windows_from_report_row(
     issues: list[AdapterIssue],
 ) -> list[dict[str, str]]:
     normalized = _space_availability_report_flags(row_text)
-    match = re.match(r"(?P<name>.+?)\s+(?P<all_day>YES|NO)\s+(?P<unavailable_all_day>YES|NO)\s*(?P<rest>.*)$", normalized)
+    # Column order, confirmed against the source PDF's own table structure (pdfplumber
+    # extract_tables, not just word position): Day | Support Worker | Unavailable |
+    # All day (8am - 11pm) | Free from...To... | Free from...To.... So the first YES/NO
+    # flag is "Unavailable" (a hard "do not book me at all today" signal) and the second
+    # is "Available all day (8am-11pm)" -- these are NOT "all day available" then
+    # "unavailable all day" as the group names might suggest at a glance.
+    match = re.match(r"(?P<name>.+?)\s+(?P<unavailable>YES|NO)\s+(?P<available_all_day>YES|NO)\s*(?P<rest>.*)$", normalized)
     if not match:
         _add_issue(
             issues,
@@ -1837,20 +1843,56 @@ def _availability_windows_from_report_row(
         return []
     if _is_recruitment_pipeline_name(worker_name):
         return []
-    if match.group("all_day") == "YES":
-        pairs = [(AVAILABILITY_REPORT_ALL_DAY_START, AVAILABILITY_REPORT_ALL_DAY_END)]
-    else:
-        times = re.findall(r"\b\d{1,2}:\d{2}\b", match.group("rest"))
-        if len(times) % 2:
+
+    times = re.findall(r"\b\d{1,2}:\d{2}\b", match.group("rest"))
+    if len(times) % 2:
+        _add_issue(
+            issues,
+            "warning",
+            "unpaired_availability_report_time",
+            "availability report row has an odd number of time values; trailing time was ignored",
+            str(path),
+            row_number,
+        )
+
+    if match.group("unavailable") == "YES":
+        if times:
             _add_issue(
                 issues,
                 "warning",
-                "unpaired_availability_report_time",
-                "availability report row has an odd number of time values; trailing time was ignored",
+                "contradictory_availability_report_row",
+                "availability report row is marked Unavailable but also gives specific free times; "
+                "treated as unavailable for the whole day",
+                str(path),
+                row_number,
+            )
+        return []
+
+    if times:
+        if match.group("available_all_day") == "YES":
+            _add_issue(
+                issues,
+                "info",
+                "availability_report_specific_times_override_all_day",
+                "availability report row is marked available all day but also gives narrower specific "
+                "times; the narrower times were used",
                 str(path),
                 row_number,
             )
         pairs = [(_coerce_report_time(times[index]), _coerce_report_time(times[index + 1])) for index in range(0, len(times) - 1, 2)]
+    elif match.group("available_all_day") == "YES":
+        pairs = [(AVAILABILITY_REPORT_ALL_DAY_START, AVAILABILITY_REPORT_ALL_DAY_END)]
+    else:
+        _add_issue(
+            issues,
+            "warning",
+            "empty_availability_report_row",
+            "availability report row is not marked unavailable or available all day, and gives no "
+            "specific free times; no availability window could be determined",
+            str(path),
+            row_number,
+        )
+        return []
 
     output = []
     for window_index, (start_time, end_time) in enumerate(pairs, start=1):

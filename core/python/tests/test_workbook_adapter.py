@@ -762,6 +762,9 @@ class WorkbookAdapterTests(unittest.TestCase):
                 [
                     "Availability reporting",
                     "For the month: July 2026",
+                    # Column order in the real report is Unavailable, then Available all
+                    # day (8am-11pm) -- "YES NO" means unavailable that whole day, not
+                    # available all day.
                     "Fri, 10",
                     "Jul 2026",
                     "Lane Worker YES NO",
@@ -773,7 +776,10 @@ class WorkbookAdapterTests(unittest.TestCase):
                     "Sage River (Scout) NO NO 10:00 11:00",
                     "Fri, 17 Jul",
                     "2026",
-                    "Moss Worker YES NO",
+                    "Moss Worker NO YES",
+                    "Fri, 17 Jul",
+                    "2026",
+                    "Lane Worker NO YES",
                     "Fri, 10",
                     "Jul 2026",
                     "Recruit Worker (R) YES NO",
@@ -787,10 +793,12 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertNotIn("availability_report_pdf_requires_review", {issue.code for issue in report.warnings})
             lane_windows = result.state.workers["worker-lane"].availability
             moss_windows = result.state.workers["worker-moss"].availability
+            # Lane is marked Unavailable on the 10th (no window at all) and Available all
+            # day on the 17th, so only one window survives, on the 17th.
             self.assertEqual(1, len(lane_windows))
             self.assertEqual("Lane Worker (P)", result.state.workers["worker-lane"].name)
-            self.assertEqual("2026-07-10T08:00:00+01:00", lane_windows[0].start.isoformat())
-            self.assertEqual("2026-07-10T23:00:00+01:00", lane_windows[0].end.isoformat())
+            self.assertEqual("2026-07-17T08:00:00+01:00", lane_windows[0].start.isoformat())
+            self.assertEqual("2026-07-17T23:00:00+01:00", lane_windows[0].end.isoformat())
             self.assertEqual(3, len(moss_windows))
             self.assertEqual(
                 ["2026-07-10T09:00:00+01:00", "2026-07-10T14:00:00+01:00"],
@@ -799,6 +807,86 @@ class WorkbookAdapterTests(unittest.TestCase):
             self.assertEqual("2026-07-17T08:00:00+01:00", moss_windows[2].start.isoformat())
             self.assertEqual(1, len(result.state.workers["worker-sage"].availability))
             self.assertEqual(5, report.row_counts["availability"])
+
+    def test_availability_report_unavailable_flag_produces_no_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "availability.csv").unlink()
+            (source_dir / "staff.csv").write_text(
+                "\n".join(
+                    [
+                        "staff_id,name,postcode,travel_modes,has_car,skills,willing_areas,current_hours,max_hours",
+                        "worker-lane,Lane Worker,AA1 1AA,drive,true,road_safety,AA1,0,20",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report_dir = source_dir / "availability report"
+            report_dir.mkdir()
+            _write_text_pdf(
+                report_dir / "July 2026.pdf",
+                [
+                    "Fri, 10",
+                    "Jul 2026",
+                    # Marked Unavailable but also carries stray times -- the hard
+                    # Unavailable flag should win, with a warning about the contradiction.
+                    "Lane Worker YES NO 15:00 20:00",
+                ],
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-availability-unavailable")
+            result = load_standardized_csv(output_dir)
+
+            self.assertEqual(0, len(result.state.workers["worker-lane"].availability))
+            self.assertIn(
+                "contradictory_availability_report_row",
+                {issue.code for issue in report.warnings},
+            )
+            self.assertEqual(0, report.row_counts["availability"])
+
+    def test_availability_report_specific_times_override_all_day_flag(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_dir = Path(temp_dir) / "source"
+            output_dir = Path(temp_dir) / "out"
+            shutil.copytree(FIXTURE_DIR, source_dir)
+            (source_dir / "availability.csv").unlink()
+            (source_dir / "staff.csv").write_text(
+                "\n".join(
+                    [
+                        "staff_id,name,postcode,travel_modes,has_car,skills,willing_areas,current_hours,max_hours",
+                        "worker-lane,Lane Worker,AA1 1AA,drive,true,road_safety,AA1,0,20",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report_dir = source_dir / "availability report"
+            report_dir.mkdir()
+            _write_text_pdf(
+                report_dir / "July 2026.pdf",
+                [
+                    "Fri, 10",
+                    "Jul 2026",
+                    # Marked Available all day but also gives narrower specific times --
+                    # the narrower times should win, with an audit note.
+                    "Lane Worker NO YES 09:00 13:00",
+                ],
+            )
+
+            report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-availability-override")
+            result = load_standardized_csv(output_dir)
+
+            windows = result.state.workers["worker-lane"].availability
+            self.assertEqual(1, len(windows))
+            self.assertEqual("2026-07-10T09:00:00+01:00", windows[0].start.isoformat())
+            self.assertEqual("2026-07-10T13:00:00+01:00", windows[0].end.isoformat())
+            self.assertIn(
+                "availability_report_specific_times_override_all_day",
+                {issue.code for issue in report.issues},
+            )
 
     def test_availability_report_pdfs_are_scoped_to_the_target_import_month(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -821,13 +909,13 @@ class WorkbookAdapterTests(unittest.TestCase):
             # Sessions in this fixture are all July 2026 -- this report matches the target month.
             _write_text_pdf(
                 report_dir / "July 2026.pdf",
-                ["Fri, 10", "Jul 2026", "Lane Worker YES NO"],
+                ["Fri, 10", "Jul 2026", "Lane Worker NO YES"],
             )
             # A different month's report for a worker who has since left and is not in staff.csv
             # at all -- without month scoping this produces an unresolved_name warning per row.
             _write_text_pdf(
                 report_dir / "March 2026.pdf",
-                ["Tue, 10", "Mar 2026", "Departed Worker YES NO"],
+                ["Tue, 10", "Mar 2026", "Departed Worker NO YES"],
             )
 
             report = convert_workbook_sources(source_dir, output_dir, import_run_id="import-workbook-availability-scoped")
