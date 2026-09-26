@@ -11,6 +11,7 @@ import argparse
 import html
 import json
 from dataclasses import dataclass, replace
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable
@@ -692,7 +693,7 @@ def _render_session_card(session: dict) -> str:
   <div class="card-head">
     <div>
       <h3>{_h(session['service_user_name'])}</h3>
-      <p class="subtle">{_h(session['session_id'])} · {_h(session['start'])} to {_h(session['end'])}</p>
+      <p class="subtle">{_h(session['session_id'])} · {_h(_format_datetime_range(session['start'], session['end']))}</p>
     </div>
     <div class="badges">
       <span>{_h(session['status'])}</span>
@@ -732,7 +733,7 @@ def _render_candidate(candidate: dict) -> str:
         travel_text = f"{_h(travel['mode'])}, {travel['minutes']} min, confidence {travel['confidence']}"
     decision = ""
     if candidate["decision_type"]:
-        decision = f"<p class=\"decision\">Decision: {_h(candidate['decision_type'])} at {_h(candidate['decided_at'])}</p>"
+        decision = f"<p class=\"decision\">Decision: {_h(candidate['decision_type'])} at {_h(_format_datetime(candidate['decided_at']))}</p>"
     form = _render_decision_form(candidate)
     selected = " selected" if candidate["selected_by_plan"] else ""
     blocked = " blocked" if candidate["hard_constraint_failures"] else ""
@@ -779,7 +780,7 @@ def _render_decision_form(candidate: dict) -> str:
 
 def _render_worker_day(item: dict) -> str:
     stops = "".join(
-        f"<li>{_h(stop['start'])}: {_h(stop['service_user_name'])} at {_h(stop['location'])}</li>"
+        f"<li>{_h(_format_datetime_range(stop['start'], stop['end']))}: {_h(stop['service_user_name'])} at {_h(stop['location'])}</li>"
         for stop in item["stops"]
     )
     return f"<div class=\"route\"><h3>{_h(item['worker_name'])}</h3><ol>{stops}</ol></div>"
@@ -871,6 +872,33 @@ def _first_values(values: dict[str, list[str]]) -> dict[str, str]:
 
 def _h(value) -> str:
     return html.escape(str(value), quote=True)
+
+
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _format_datetime(value: str) -> str:
+    """Render an ISO 8601 timestamp as e.g. 'Thu 5 Nov 2026, 14:00'; falls back to the raw value if unparseable."""
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return value
+    return f"{_WEEKDAYS[parsed.weekday()]} {parsed.day} {_MONTHS[parsed.month - 1]} {parsed.year}, {parsed:%H:%M}"
+
+
+def _format_datetime_range(start: str, end: str) -> str:
+    """Render a start/end pair as e.g. 'Thu 5 Nov 2026, 14:00-18:00', collapsing the end date when it matches the start."""
+    try:
+        start_dt = datetime.fromisoformat(start)
+        end_dt = datetime.fromisoformat(end)
+    except ValueError:
+        return f"{start} to {end}"
+    if start_dt.date() == end_dt.date():
+        return f"{_format_datetime(start)}-{end_dt:%H:%M}"
+    return f"{_format_datetime(start)} - {_format_datetime(end)}"
 
 
 _CSS = """
