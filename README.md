@@ -2,6 +2,34 @@
 
 Rebuild foundation for a tenant-agnostic support-worker allocation planner.
 
+## About this project
+
+A personal project: a prototype planner that proposes which support worker
+should cover which session, built around the real scheduling problems of a UK
+support services provider. All names, postcodes and records in this repository
+are synthetic.
+
+Highlights:
+
+- **Rules first, LLM second.** A deterministic parser handles structured
+  booking rows. Free-text ad hoc notes it can't parse ("Saturday preferred,
+  Sunday if not possible") go to an optional Claude fallback
+  (`core/python/booking_recommender/adapters/llm_ad_hoc_parser.py`).
+- **No invented people.** The model resolves names against the known roster
+  only, returns strict JSON-schema output, and only high-confidence matches are
+  applied automatically. Everything else becomes an audit warning for a human.
+- **Cost-capped.** Only rows the rules failed on are sent, batched (max 20 rows
+  per call, max 5 calls per run). Hitting the cap degrades to a warning, not a
+  crash.
+- **Evaluated before use.** The prompt, schema and confidence rules were checked
+  against 29 real ad hoc notes spanning four months, which surfaced failure
+  modes now covered by tests (for example "1 midweek + 1 weekend session" being
+  flattened into a plain two-session list).
+- **Explainable plans.** Every proposed allocation carries its reasons and
+  warnings, with travel-time feasibility, compatibility and continuity scoring.
+
+Run the tests: `cd core/python && python3 -m unittest discover -s tests -t .`
+
 The recommender should be rules-first, optimization-aware, and explainable. It
 should generate a complete proposed allocation plan for the planning period,
 show the reasons and warnings behind each allocation, and let bookings staff

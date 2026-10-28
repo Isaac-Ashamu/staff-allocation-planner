@@ -1,0 +1,13 @@
+.env
+.env.*
+*.local
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
+output/
+local-data/
+config/aliases.local.json
